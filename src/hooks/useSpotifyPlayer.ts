@@ -101,7 +101,7 @@ interface UseSpotifyPlayerReturn {
   duration: number;
   error: string | null;
   // Controles (solo funcionan para el host)
-  play: (spotifyUri: string) => Promise<void>;
+  play: (spotifyUri: string, positionMs?: number) => Promise<void>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
   seek: (positionMs: number) => Promise<void>;
@@ -227,14 +227,21 @@ export function useSpotifyPlayer({
     playerRef.current = player;
   }, [token, onPlayerReady, onPlayerError]);
 
-  // Reproducir una canción
-  const play = useCallback(async (spotifyUri: string) => {
+  // Reproducir una canción (opcionalmente desde una posición específica)
+  const play = useCallback(async (spotifyUri: string, positionMs?: number) => {
     if (!deviceId || !token) {
       setError('Player no está listo');
       return;
     }
 
     try {
+      const body: { uris: string[]; position_ms?: number } = {
+        uris: [spotifyUri],
+      };
+      if (positionMs !== undefined) {
+        body.position_ms = positionMs;
+      }
+
       const response = await fetch(
         `https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`,
         {
@@ -243,9 +250,7 @@ export function useSpotifyPlayer({
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({
-            uris: [spotifyUri],
-          }),
+          body: JSON.stringify(body),
         }
       );
 

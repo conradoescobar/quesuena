@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useGameRoom } from '@/hooks/useGameRoom';
 import { useSpotifyToken } from '@/hooks/useSpotifyToken';
@@ -9,6 +9,9 @@ import { updateRoomStatus, updatePlayerScore } from '@/lib/actions/room';
 import { getRoomSongs, removeSong } from '@/lib/actions/songs';
 import { SongSearch } from '@/components/SongSearch';
 import type { Room, Player, Song } from '@/types/database';
+
+// Duración del snippet en milisegundos
+const SNIPPET_DURATION_MS = 3000;
 
 // =============================================
 // Types
@@ -50,7 +53,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   });
   const [roundTimer, setRoundTimer] = useState<number>(0);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
-    const [buzzCooldown, setBuzzCooldown] = useState(false);
+  const [buzzCooldown, setBuzzCooldown] = useState(false);
+  const [snippetPosition, setSnippetPosition] = useState<number>(0); // Posición aleatoria del snippet
+  const [isSnippetPlaying, setIsSnippetPlaying] = useState(false);
+  const snippetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // -------------------------
   // Hooks
@@ -76,14 +82,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   const { token: spotifyToken, error: tokenError, refreshToken } = useSpotifyToken();
 
   // Spotify player (solo host)
-  // Note: currentTrack, position, duration available but not used in current UI
   const {
     isReady: playerReady,
-    isPlaying,
     error: playerError,
     play,
     pause,
-    resume,
   } = useSpotifyPlayer({
     token: spotifyToken,
     isHost,
@@ -168,6 +171,39 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   };
 
   // -------------------------
+  // Reproducir snippet aleatorio de 3 segundos
+  // -------------------------
+  const playSnippet = useCallback(async (spotifyUri: string, customPosition?: number) => {
+    // Limpiar timeout anterior si existe
+    if (snippetTimeoutRef.current) {
+      clearTimeout(snippetTimeoutRef.current);
+    }
+
+    // Generar posición aleatoria entre 30s y 2min (evitar intro/outro)
+    const randomPosition = customPosition ?? Math.floor(Math.random() * (120000 - 30000)) + 30000;
+    setSnippetPosition(randomPosition);
+    setIsSnippetPlaying(true);
+
+    // Reproducir desde la posición aleatoria
+    await play(spotifyUri, randomPosition);
+
+    // Pausar después de 3 segundos
+    snippetTimeoutRef.current = setTimeout(async () => {
+      await pause();
+      setIsSnippetPlaying(false);
+    }, SNIPPET_DURATION_MS);
+  }, [play, pause]);
+
+  // Repetir el mismo snippet
+  const handleRepeat = useCallback(async () => {
+    const songIndex = gameState?.current_round_index || 0;
+    const currentSong = songs[songIndex];
+    if (currentSong && spotifyToken) {
+      await playSnippet(currentSong.spotify_uri, snippetPosition);
+    }
+  }, [gameState?.current_round_index, songs, spotifyToken, playSnippet, snippetPosition]);
+
+  // -------------------------
   // Acciones del Host con persistencia
   // -------------------------
   const handleStartGame = async () => {
@@ -177,9 +213,9 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     // 2. Broadcast para sync inmediato
     updateGameState({ status: 'playing', current_round_index: 0 });
 
-    // 3. Reproducir primera canción si hay
+    // 3. Reproducir snippet de la primera canción
     if (songs.length > 0 && spotifyToken) {
-      await play(songs[0].spotify_uri);
+      await playSnippet(songs[0].spotify_uri);
     }
 
     setIsTimerRunning(true);
@@ -194,9 +230,9 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     // 2. Broadcast
     updateGameState({ status: 'playing', current_round_index: nextIndex });
 
-    // 3. Reproducir siguiente canción
+    // 3. Reproducir snippet de la siguiente canción
     if (songs[nextIndex] && spotifyToken) {
-      await play(songs[nextIndex].spotify_uri);
+      await playSnippet(songs[nextIndex].spotify_uri);
     }
 
     // 4. Reset round state
@@ -206,6 +242,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   };
 
   const handleEndGame = async () => {
+    // Limpiar timeout de snippet
+    if (snippetTimeoutRef.current) {
+      clearTimeout(snippetTimeoutRef.current);
+    }
+
     // 1. Persistir
     await updateRoomStatus(room.id, 'finished', 0);
 
@@ -218,6 +259,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     }
 
     setIsTimerRunning(false);
+    setIsSnippetPlaying(false);
   };
 
   // -------------------------
@@ -396,10 +438,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                   {effectiveStatus === 'playing' && (
                     <>
                       <button
-                        onClick={isPlaying ? pause : resume}
-                        className="bg-yellow-500 text-white font-medium py-3 px-4 rounded-xl text-sm"
+                        onClick={handleRepeat}
+                        disabled={isSnippetPlaying}
+                        className="bg-yellow-500 disabled:bg-yellow-600 text-white font-medium py-3 px-4 rounded-xl text-sm"
                       >
-                        {isPlaying ? '⏸️' : '▶️'}
+                        {isSnippetPlaying ? '🔊' : '🔁'}
                       </button>
                       <button
                         onClick={handleNextRound}
@@ -564,10 +607,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                   {effectiveStatus === 'playing' && (
                     <>
                       <button
-                        onClick={isPlaying ? pause : resume}
-                        className="bg-yellow-500 hover:bg-yellow-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                        onClick={handleRepeat}
+                        disabled={isSnippetPlaying}
+                        className="bg-yellow-500 hover:bg-yellow-600 disabled:bg-yellow-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
                       >
-                        {isPlaying ? '⏸️ Pausar' : '▶️ Reanudar'}
+                        {isSnippetPlaying ? '🔊 Sonando...' : '🔁 Repetir'}
                       </button>
                       <button
                         onClick={handleNextRound}
