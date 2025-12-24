@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="32" fill="#1a1a2e"/>
+  <circle cx="96" cy="80" r="40" fill="#22c55e"/>
+  <path d="M80 70 L80 90 L105 80 Z" fill="#1a1a2e"/>
+  <text x="96" y="150" text-anchor="middle" fill="#22c55e" font-size="24" font-weight="bold" font-family="system-ui">QueSuena</text>
+</svg>
