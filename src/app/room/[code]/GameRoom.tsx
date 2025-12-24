@@ -174,6 +174,13 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   // Reproducir snippet aleatorio de 3 segundos
   // -------------------------
   const playSnippet = useCallback(async (spotifyUri: string, customPosition?: number) => {
+    console.log('playSnippet called:', { spotifyUri, playerReady, spotifyToken: !!spotifyToken });
+
+    if (!playerReady) {
+      console.warn('Spotify player not ready yet');
+      return;
+    }
+
     // Limpiar timeout anterior si existe
     if (snippetTimeoutRef.current) {
       clearTimeout(snippetTimeoutRef.current);
@@ -181,6 +188,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
 
     // Generar posición aleatoria entre 30s y 2min (evitar intro/outro)
     const randomPosition = customPosition ?? Math.floor(Math.random() * (120000 - 30000)) + 30000;
+    console.log('Playing snippet from position:', randomPosition, 'ms');
     setSnippetPosition(randomPosition);
     setIsSnippetPlaying(true);
 
@@ -189,10 +197,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
 
     // Pausar después de 3 segundos
     snippetTimeoutRef.current = setTimeout(async () => {
+      console.log('Snippet finished, pausing...');
       await pause();
       setIsSnippetPlaying(false);
     }, SNIPPET_DURATION_MS);
-  }, [play, pause]);
+  }, [play, pause, playerReady, spotifyToken]);
 
   // Repetir el mismo snippet
   const handleRepeat = useCallback(async () => {
@@ -207,6 +216,14 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   // Acciones del Host con persistencia
   // -------------------------
   const handleStartGame = async () => {
+    console.log('handleStartGame:', { playerReady, songsCount: songs.length, hasToken: !!spotifyToken });
+
+    if (!playerReady) {
+      console.error('Cannot start: Spotify player not ready');
+      alert('Espera a que Spotify esté listo (ver estado abajo)');
+      return;
+    }
+
     // 1. Persistir en DB
     await updateRoomStatus(room.id, 'playing', 0);
 
@@ -214,7 +231,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     updateGameState({ status: 'playing', current_round_index: 0 });
 
     // 3. Reproducir snippet de la primera canción
-    if (songs.length > 0 && spotifyToken) {
+    if (songs.length > 0) {
       await playSnippet(songs[0].spotify_uri);
     }
 
@@ -423,10 +440,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                     <>
                       <button
                         onClick={handleStartGame}
-                        disabled={songs.length === 0}
+                        disabled={songs.length === 0 || !playerReady}
                         className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-3 px-6 rounded-xl transition-colors text-sm"
                       >
-                        ▶️ Iniciar
+                        {!playerReady ? '⏳ Cargando...' : '▶️ Iniciar'}
                       </button>
                       {songs.length === 0 && (
                         <p className="w-full text-center text-yellow-400 text-xs mt-2">
@@ -594,10 +611,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                     <>
                       <button
                         onClick={handleStartGame}
-                        disabled={songs.length === 0}
+                        disabled={songs.length === 0 || !playerReady}
                         className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
                       >
-                        ▶️ Iniciar Juego {songs.length > 0 && `(${songs.length} canciones)`}
+                        {!playerReady ? '⏳ Cargando Spotify...' : `▶️ Iniciar Juego ${songs.length > 0 ? `(${songs.length} canciones)` : ''}`}
                       </button>
                       {songs.length === 0 && (
                         <span className="text-yellow-400 text-sm">← Primero agrega canciones</span>
