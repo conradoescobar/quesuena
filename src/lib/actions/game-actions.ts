@@ -132,12 +132,11 @@ export async function addSongToRoom(
     // Insertar la canción
     const { error: insertError } = await supabase.from('songs').insert({
       room_id: roomId,
-      added_by: user.id,
+      user_id: user.id,
       spotify_uri: song.uri,
       title: song.name,
       artist: song.artist,
-      album_art: song.albumUrl,
-      played: false,
+      album_art_url: song.albumUrl,
     });
 
     if (insertError) {
