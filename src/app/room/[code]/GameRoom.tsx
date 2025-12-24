@@ -298,19 +298,21 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
 
       <div className="max-w-6xl mx-auto">
         {/* ===================== HEADER ===================== */}
-        <header className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-white">
-              Sala: <span className="text-green-400 tracking-widest">{room.code}</span>
+        <header className="flex items-center justify-between gap-2 mb-4 lg:mb-6">
+          <div className="flex-1 min-w-0">
+            <h1 className="text-lg lg:text-2xl font-bold text-white truncate">
+              <span className="text-green-400 tracking-widest">{room.code}</span>
             </h1>
-            <div className="flex items-center gap-3 mt-1">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`} />
-              <span className="text-gray-400 text-sm">
-                {isConnected ? 'Conectado' : connectionError || 'Conectando...'}
-              </span>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <div className="flex items-center gap-1">
+                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+                <span className="text-gray-400 text-xs lg:text-sm">
+                  {isConnected ? 'OK' : 'Sin conexión'}
+                </span>
+              </div>
               {effectiveStatus === 'playing' && (
-                <span className="text-purple-400 text-sm">
-                  Ronda {currentSongIndex + 1}/{songs.length || '?'} • {formatTime(roundTimer)}
+                <span className="text-purple-400 text-xs lg:text-sm hidden lg:inline">
+                  Ronda {currentSongIndex + 1}/{songs.length || '?'}
                 </span>
               )}
             </div>
@@ -318,16 +320,131 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
 
           <button
             onClick={() => router.push('/lobby')}
-            className="text-gray-400 hover:text-white text-sm transition-colors"
+            className="text-gray-400 hover:text-white text-xs lg:text-sm transition-colors px-3 py-2 rounded-lg bg-white/5"
           >
-            Salir de la sala
+            Salir
           </button>
         </header>
 
         {/* ===================== MAIN GRID ===================== */}
-        <div className="grid lg:grid-cols-4 gap-6">
+        {/* Mobile: stack with buzzer first. Desktop: 4-column grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6">
+
+          {/* ===================== MOBILE: BUZZER FIRST ===================== */}
+          <div className="lg:hidden space-y-4">
+            {/* BUZZER - Prominente en móvil */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 text-center">
+              <button
+                onClick={handleBuzz}
+                disabled={!isBuzzerEnabled}
+                className={`
+                  w-32 h-32 rounded-full text-3xl font-black transition-all duration-200 transform mx-auto block
+                  ${
+                    !isBuzzerEnabled
+                      ? 'bg-gray-700 text-gray-500 cursor-not-allowed scale-95'
+                      : 'bg-red-500 hover:bg-red-600 text-white active:scale-90 shadow-lg shadow-red-500/50'
+                  }
+                `}
+              >
+                {roundState.isLocked ? '🔒' : buzzCooldown ? '...' : 'BUZZ!'}
+              </button>
+              <p className="text-gray-500 text-xs mt-3">
+                {roundState.isLocked
+                  ? `${roundState.winnerName} fue primero`
+                  : effectiveStatus !== 'playing'
+                  ? 'Esperando inicio...'
+                  : 'Presiona cuando sepas la canción'}
+              </p>
+
+              {/* Estado + Timer en móvil */}
+              <div className="flex items-center justify-center gap-4 mt-3">
+                <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                  effectiveStatus === 'playing' ? 'bg-green-500/20 text-green-400' :
+                  effectiveStatus === 'waiting' ? 'bg-yellow-500/20 text-yellow-400' :
+                  'bg-gray-500/20 text-gray-400'
+                }`}>
+                  {effectiveStatus}
+                </span>
+                {effectiveStatus === 'playing' && (
+                  <span className="text-purple-400 text-sm font-mono">
+                    {formatTime(roundTimer)}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Host Controls Mobile */}
+            {isHost && (
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {effectiveStatus === 'waiting' && (
+                    <button
+                      onClick={handleStartGame}
+                      disabled={songs.length === 0}
+                      className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-3 px-6 rounded-xl transition-colors text-sm"
+                    >
+                      ▶️ Iniciar
+                    </button>
+                  )}
+                  {effectiveStatus === 'playing' && (
+                    <>
+                      <button
+                        onClick={isPlaying ? pause : resume}
+                        className="bg-yellow-500 text-white font-medium py-3 px-4 rounded-xl text-sm"
+                      >
+                        {isPlaying ? '⏸️' : '▶️'}
+                      </button>
+                      <button
+                        onClick={handleNextRound}
+                        disabled={currentSongIndex >= songs.length - 1}
+                        className="bg-purple-500 disabled:bg-gray-600 text-white font-medium py-3 px-4 rounded-xl text-sm"
+                      >
+                        ⏭️
+                      </button>
+                      <button
+                        onClick={handleEndGame}
+                        className="bg-gray-500 text-white font-medium py-3 px-4 rounded-xl text-sm"
+                      >
+                        🏁
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {/* Dar puntos - móvil */}
+                {roundState.isLocked && roundState.winnerId && (
+                  <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-3 mt-3 text-center">
+                    <p className="text-green-400 text-sm mb-2">
+                      🎉 <strong>{roundState.winnerName}</strong> acertó!
+                    </p>
+                    <div className="flex gap-2 justify-center">
+                      <button
+                        onClick={() => {
+                          const player = dbPlayers.find((p) => p.user_id === roundState.winnerId);
+                          if (player) handleAwardPoints(player.id, 1);
+                        }}
+                        className="bg-green-500 text-white text-sm py-2 px-4 rounded-lg"
+                      >
+                        +1
+                      </button>
+                      <button
+                        onClick={() => {
+                          const player = dbPlayers.find((p) => p.user_id === roundState.winnerId);
+                          if (player) handleAwardPoints(player.id, 2);
+                        }}
+                        className="bg-green-500 text-white text-sm py-2 px-4 rounded-lg"
+                      >
+                        +2
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* ===================== SIDEBAR: PLAYERS + RANKING ===================== */}
-          <div className="lg:col-span-1 space-y-6">
+          <div className="lg:col-span-1 space-y-4 lg:space-y-6">
             {/* Players Online */}
             <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
               <h2 className="text-sm font-semibold text-gray-400 mb-3">
@@ -370,8 +487,8 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
             </div>
           </div>
 
-          {/* ===================== MAIN CONTENT ===================== */}
-          <div className="lg:col-span-2 space-y-6">
+          {/* ===================== MAIN CONTENT (Desktop only for buzzer) ===================== */}
+          <div className="hidden lg:block lg:col-span-2 lg:space-y-6">
             {/* Estado del juego */}
             <div className="bg-white/5 border border-white/10 rounded-2xl p-6 text-center">
               <p className="text-gray-400 text-sm mb-1">Estado</p>
@@ -506,18 +623,18 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
           </div>
 
           {/* ===================== SIDEBAR: SONG QUEUE ===================== */}
-          <div className="lg:col-span-1 space-y-6">
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
-              <h2 className="text-sm font-semibold text-gray-400 mb-3">🎵 Cola ({songs.length})</h2>
+          <div className="lg:col-span-1 space-y-4 lg:space-y-6">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-3 lg:p-4">
+              <h2 className="text-sm font-semibold text-gray-400 mb-2 lg:mb-3">🎵 Cola ({songs.length})</h2>
 
               {/* Buscador de Spotify (solo host) */}
               {isHost && (
-                <div className="mb-4">
+                <div className="mb-3 lg:mb-4">
                   <SongSearch roomId={room.id} onSongAdded={loadSongs} />
                 </div>
               )}
 
-              <ul className="space-y-2 max-h-60 overflow-y-auto">
+              <ul className="space-y-2 max-h-48 lg:max-h-60 overflow-y-auto">
                 {songs.map((song, idx) => (
                   <li
                     key={song.id}
