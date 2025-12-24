@@ -134,6 +134,10 @@ export function useGameRoom({
         return;
       }
 
+      // Update local state immediately (for the sender)
+      setGameState(state);
+
+      // Broadcast to all other players
       channelRef.current.send({
         type: 'broadcast',
         event: 'game_state',
