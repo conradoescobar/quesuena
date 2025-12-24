@@ -6,7 +6,8 @@ import { useGameRoom } from '@/hooks/useGameRoom';
 import { useSpotifyToken } from '@/hooks/useSpotifyToken';
 import { useSpotifyPlayer } from '@/hooks/useSpotifyPlayer';
 import { updateRoomStatus, updatePlayerScore } from '@/lib/actions/room';
-import { getRoomSongs, addSong, removeSong } from '@/lib/actions/songs';
+import { getRoomSongs, removeSong } from '@/lib/actions/songs';
+import { SongSearch } from '@/components/SongSearch';
 import type { Room, Player, Song } from '@/types/database';
 
 // =============================================
@@ -49,8 +50,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   });
   const [roundTimer, setRoundTimer] = useState<number>(0);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
-  const [showAddSong, setShowAddSong] = useState(false);
-  const [buzzCooldown, setBuzzCooldown] = useState(false);
+    const [buzzCooldown, setBuzzCooldown] = useState(false);
 
   // -------------------------
   // Hooks
@@ -239,22 +239,6 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
         current_round_index: gameState?.current_round_index || 0,
         winner_id: playerId,
       });
-    }
-  };
-
-  // -------------------------
-  // Agregar canción
-  // -------------------------
-  const handleAddSong = async (songData: {
-    spotify_uri: string;
-    title: string;
-    artist: string;
-    album_art_url?: string;
-  }) => {
-    const result = await addSong(room.id, songData);
-    if ('song' in result) {
-      setSongs((prev) => [...prev, result.song]);
-      setShowAddSong(false);
     }
   };
 
@@ -524,19 +508,16 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
           {/* ===================== SIDEBAR: SONG QUEUE ===================== */}
           <div className="lg:col-span-1 space-y-6">
             <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-gray-400">🎵 Cola ({songs.length})</h2>
-                {isHost && (
-                  <button
-                    onClick={() => setShowAddSong(true)}
-                    className="text-green-400 hover:text-green-300 text-sm"
-                  >
-                    + Agregar
-                  </button>
-                )}
-              </div>
+              <h2 className="text-sm font-semibold text-gray-400 mb-3">🎵 Cola ({songs.length})</h2>
 
-              <ul className="space-y-2 max-h-80 overflow-y-auto">
+              {/* Buscador de Spotify (solo host) */}
+              {isHost && (
+                <div className="mb-4">
+                  <SongSearch roomId={room.id} onSongAdded={loadSongs} />
+                </div>
+              )}
+
+              <ul className="space-y-2 max-h-60 overflow-y-auto">
                 {songs.map((song, idx) => (
                   <li
                     key={song.id}
@@ -591,119 +572,6 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
         </div>
       </div>
 
-      {/* ===================== MODAL: AGREGAR CANCIÓN ===================== */}
-      {showAddSong && (
-        <AddSongModal
-          onClose={() => setShowAddSong(false)}
-          onAdd={handleAddSong}
-        />
-      )}
     </main>
-  );
-}
-
-// =============================================
-// Modal para agregar canción
-// =============================================
-
-function AddSongModal({
-  onClose,
-  onAdd,
-}: {
-  onClose: () => void;
-  onAdd: (song: { spotify_uri: string; title: string; artist: string; album_art_url?: string }) => void;
-}) {
-  const [uri, setUri] = useState('');
-  const [title, setTitle] = useState('');
-  const [artist, setArtist] = useState('');
-  const [albumArt, setAlbumArt] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!uri || !title || !artist) return;
-
-    setIsLoading(true);
-    await onAdd({
-      spotify_uri: uri.startsWith('spotify:track:') ? uri : `spotify:track:${uri}`,
-      title,
-      artist,
-      album_art_url: albumArt || undefined,
-    });
-    setIsLoading(false);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-900 border border-white/10 rounded-2xl p-6 w-full max-w-md">
-        <h3 className="text-xl font-bold text-white mb-4">Agregar Canción</h3>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="text-gray-400 text-sm">Spotify URI o Track ID *</label>
-            <input
-              type="text"
-              value={uri}
-              onChange={(e) => setUri(e.target.value)}
-              placeholder="spotify:track:xxx o solo el ID"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-white mt-1"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="text-gray-400 text-sm">Título *</label>
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Nombre de la canción"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-white mt-1"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="text-gray-400 text-sm">Artista *</label>
-            <input
-              type="text"
-              value={artist}
-              onChange={(e) => setArtist(e.target.value)}
-              placeholder="Nombre del artista"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-white mt-1"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="text-gray-400 text-sm">URL de carátula (opcional)</label>
-            <input
-              type="text"
-              value={albumArt}
-              onChange={(e) => setAlbumArt(e.target.value)}
-              placeholder="https://..."
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-white mt-1"
-            />
-          </div>
-
-          <div className="flex gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-lg"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-green-500/50 text-white py-2 rounded-lg"
-            >
-              {isLoading ? 'Agregando...' : 'Agregar'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
   );
 }
