@@ -1,48 +1,88 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 interface SpotifyTokenData {
   access_token: string;
-  refresh_token: string | null;
+  refresh_token?: string | null;
   expires_at: number;
-  user_id: string;
+  user_id?: string;
 }
 
 interface UseSpotifyTokenReturn {
   token: string | null;
   isLoading: boolean;
   error: string | null;
+  expiresAt: number | null;
   refreshToken: () => Promise<void>;
 }
 
 /**
- * Hook to manage Spotify access token on the client side
+ * Hook para gestionar el token de Spotify con auto-refresh
  *
- * This hook fetches the Spotify token from our API route and provides
- * methods to refresh it when needed.
- *
- * Usage:
- * ```tsx
- * const { token, isLoading, error, refreshToken } = useSpotifyToken();
- *
- * useEffect(() => {
- *   if (token) {
- *     // Initialize Spotify Web Playback SDK with token
- *     const player = new Spotify.Player({
- *       name: 'Adivina la canción',
- *       getOAuthToken: cb => cb(token),
- *     });
- *   }
- * }, [token]);
- * ```
+ * Funcionalidades:
+ * 1. Obtiene el token inicial desde la sesión
+ * 2. Monitorea la expiración y refresca automáticamente
+ * 3. Proporciona método manual para refrescar si falla
  */
 export function useSpotifyToken(): UseSpotifyTokenReturn {
   const [token, setToken] = useState<string | null>(null);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const doRefreshRef = useRef<() => Promise<void>>();
 
-  const fetchToken = useCallback(async () => {
+  // Refrescar el token
+  const doRefresh = useCallback(async () => {
+    try {
+      setError(null);
+
+      const response = await fetch('/api/auth/refresh-spotify', {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to refresh token');
+      }
+
+      setToken(data.access_token);
+      setExpiresAt(data.expires_at);
+
+      // Schedule next refresh
+      const now = Date.now();
+      const expiresAtMs = data.expires_at * 1000;
+      const timeUntilExpiry = expiresAtMs - now;
+      const refreshIn = timeUntilExpiry - 5 * 60 * 1000; // 5 minutes before
+
+      if (refreshIn > 0) {
+        console.log(`Token refresh scheduled in ${Math.round(refreshIn / 1000 / 60)} minutes`);
+        if (refreshTimeoutRef.current) {
+          clearTimeout(refreshTimeoutRef.current);
+        }
+        refreshTimeoutRef.current = setTimeout(() => {
+          console.log('Auto-refreshing Spotify token...');
+          doRefreshRef.current?.();
+        }, refreshIn);
+      }
+
+      console.log('Spotify token refreshed successfully');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      setError(message);
+      console.error('Token refresh failed:', message);
+    }
+  }, []);
+
+  // Keep ref updated
+  useEffect(() => {
+    doRefreshRef.current = doRefresh;
+  }, [doRefresh]);
+
+  // Obtener token inicial desde la sesión
+  const fetchInitialToken = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
@@ -56,15 +96,28 @@ export function useSpotifyToken(): UseSpotifyTokenReturn {
 
       const tokenData = data as SpotifyTokenData;
       setToken(tokenData.access_token);
+      setExpiresAt(tokenData.expires_at);
 
-      // Check if token is about to expire (within 5 minutes)
-      const expiresAt = tokenData.expires_at * 1000; // Convert to milliseconds
+      // Schedule refresh before expiry
       const now = Date.now();
-      const timeUntilExpiry = expiresAt - now;
+      const expiresAtMs = tokenData.expires_at * 1000;
+      const timeUntilExpiry = expiresAtMs - now;
+      const refreshIn = timeUntilExpiry - 5 * 60 * 1000; // 5 minutes before
 
-      // If token expires in less than 5 minutes, schedule a refresh
-      if (timeUntilExpiry < 5 * 60 * 1000 && timeUntilExpiry > 0) {
-        console.warn('Spotify token expires soon, consider re-authenticating');
+      if (refreshIn > 0) {
+        console.log(`Token refresh scheduled in ${Math.round(refreshIn / 1000 / 60)} minutes`);
+        refreshTimeoutRef.current = setTimeout(() => {
+          console.log('Auto-refreshing Spotify token...');
+          doRefreshRef.current?.();
+        }, refreshIn);
+      } else if (timeUntilExpiry > 0) {
+        // Token expiring soon - refresh immediately
+        console.log('Token expiring soon, refreshing now...');
+        doRefresh();
+      } else {
+        // Token already expired
+        console.log('Token expired, refreshing...');
+        doRefresh();
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -73,17 +126,32 @@ export function useSpotifyToken(): UseSpotifyTokenReturn {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [doRefresh]);
 
-  // Fetch token on mount
+  // Efecto inicial
   useEffect(() => {
-    fetchToken();
-  }, [fetchToken]);
+    fetchInitialToken();
+
+    return () => {
+      // Limpiar timeout al desmontar
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+    };
+  }, [fetchInitialToken]);
+
+  // Método manual para refrescar (expuesto al componente)
+  const refreshToken = useCallback(async () => {
+    setIsLoading(true);
+    await doRefresh();
+    setIsLoading(false);
+  }, [doRefresh]);
 
   return {
     token,
     isLoading,
     error,
-    refreshToken: fetchToken,
+    expiresAt,
+    refreshToken,
   };
 }
