@@ -378,13 +378,20 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
               <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
                 <div className="flex flex-wrap gap-2 justify-center">
                   {effectiveStatus === 'waiting' && (
-                    <button
-                      onClick={handleStartGame}
-                      disabled={songs.length === 0}
-                      className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-3 px-6 rounded-xl transition-colors text-sm"
-                    >
-                      ▶️ Iniciar
-                    </button>
+                    <>
+                      <button
+                        onClick={handleStartGame}
+                        disabled={songs.length === 0}
+                        className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-3 px-6 rounded-xl transition-colors text-sm"
+                      >
+                        ▶️ Iniciar
+                      </button>
+                      {songs.length === 0 && (
+                        <p className="w-full text-center text-yellow-400 text-xs mt-2">
+                          Agrega canciones primero ⬇️
+                        </p>
+                      )}
+                    </>
                   )}
                   {effectiveStatus === 'playing' && (
                     <>
@@ -541,13 +548,18 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                 {/* Botones de control del juego */}
                 <div className="flex flex-wrap gap-3 mb-4">
                   {effectiveStatus === 'waiting' && (
-                    <button
-                      onClick={handleStartGame}
-                      disabled={songs.length === 0}
-                      className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-                    >
-                      ▶️ Iniciar Juego
-                    </button>
+                    <>
+                      <button
+                        onClick={handleStartGame}
+                        disabled={songs.length === 0}
+                        className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                      >
+                        ▶️ Iniciar Juego {songs.length > 0 && `(${songs.length} canciones)`}
+                      </button>
+                      {songs.length === 0 && (
+                        <span className="text-yellow-400 text-sm">← Primero agrega canciones</span>
+                      )}
+                    </>
                   )}
                   {effectiveStatus === 'playing' && (
                     <>
