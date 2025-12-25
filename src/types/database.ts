@@ -17,7 +17,8 @@ export interface Room {
 export interface Player {
   id: string;
   room_id: string;
-  user_id: string;
+  user_id: string | null; // null for guest players
+  guest_id: string | null; // UUID for guest players
   display_name: string;
   avatar_url: string | null;
   score: number;
@@ -27,7 +28,9 @@ export interface Player {
 export interface Song {
   id: string;
   room_id: string;
-  user_id: string;
+  user_id: string | null; // null for guest-added songs
+  guest_id: string | null; // UUID for guest who added the song
+  added_by_name: string | null; // Display name of who added it
   spotify_uri: string;
   title: string;
   artist: string;
@@ -67,7 +70,8 @@ export type Database = {
         Insert: {
           id?: string;
           room_id: string;
-          user_id: string;
+          user_id?: string | null;
+          guest_id?: string | null;
           display_name: string;
           avatar_url?: string | null;
           score?: number;
@@ -76,7 +80,8 @@ export type Database = {
         Update: {
           id?: string;
           room_id?: string;
-          user_id?: string;
+          user_id?: string | null;
+          guest_id?: string | null;
           display_name?: string;
           avatar_url?: string | null;
           score?: number;
@@ -89,7 +94,9 @@ export type Database = {
         Insert: {
           id?: string;
           room_id: string;
-          user_id: string;
+          user_id?: string | null;
+          guest_id?: string | null;
+          added_by_name?: string | null;
           spotify_uri: string;
           title: string;
           artist: string;
@@ -100,7 +107,9 @@ export type Database = {
         Update: {
           id?: string;
           room_id?: string;
-          user_id?: string;
+          user_id?: string | null;
+          guest_id?: string | null;
+          added_by_name?: string | null;
           spotify_uri?: string;
           title?: string;
           artist?: string;

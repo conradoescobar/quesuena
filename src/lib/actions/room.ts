@@ -1,6 +1,8 @@
 'use server';
 
 import { createClient } from '@/utils/supabase/server';
+import { cookies } from 'next/headers';
+import { v4 as uuidv4 } from 'uuid';
 import type { Room, Player, RoomStatus } from '@/types/database';
 
 /**
@@ -130,6 +132,143 @@ export async function joinRoom(
   }
 
   return { roomId: room.id };
+}
+
+/**
+ * Server Action: Join a room as a guest (no Spotify account required)
+ */
+export async function joinRoomAsGuest(
+  code: string,
+  nickname: string
+): Promise<{ roomId: string; guestId: string } | { error: string }> {
+  // Validate nickname
+  const trimmedNickname = nickname.trim();
+  if (!trimmedNickname || trimmedNickname.length < 2) {
+    return { error: 'El nombre debe tener al menos 2 caracteres' };
+  }
+  if (trimmedNickname.length > 20) {
+    return { error: 'El nombre no puede tener más de 20 caracteres' };
+  }
+
+  const supabase = await createClient();
+
+  // Find the room by code
+  const { data: room, error: roomError } = await supabase
+    .from('rooms')
+    .select('id, status')
+    .eq('code', code.toUpperCase())
+    .single();
+
+  if (roomError || !room) {
+    return { error: 'Sala no encontrada. Verifica el código.' };
+  }
+
+  if (room.status !== 'waiting') {
+    return { error: 'Este juego ya ha comenzado.' };
+  }
+
+  // Generate a guest ID
+  const guestId = uuidv4();
+
+  // Check if this guest is already in the room (by checking cookies)
+  const cookieStore = await cookies();
+  const existingGuestId = cookieStore.get('guest_id')?.value;
+
+  if (existingGuestId) {
+    // Check if this guest is already a player in this room
+    const { data: existingPlayer } = await supabase
+      .from('players')
+      .select('id')
+      .eq('room_id', room.id)
+      .eq('guest_id', existingGuestId)
+      .single();
+
+    if (existingPlayer) {
+      // Update the guest name if needed
+      await supabase
+        .from('players')
+        .update({ display_name: trimmedNickname })
+        .eq('id', existingPlayer.id);
+
+      // Update cookies
+      cookieStore.set('guest_name', trimmedNickname, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 60 * 60 * 24, // 24 hours
+      });
+
+      return { roomId: room.id, guestId: existingGuestId };
+    }
+  }
+
+  // Add guest as a player
+  const { error: playerError } = await supabase.from('players').insert({
+    room_id: room.id,
+    user_id: null,
+    guest_id: guestId,
+    display_name: trimmedNickname,
+    avatar_url: null,
+    score: 0,
+  });
+
+  if (playerError) {
+    console.error('Error adding guest player:', playerError);
+    return { error: 'Error al unirse a la sala. Intenta de nuevo.' };
+  }
+
+  // Set cookies for guest session
+  cookieStore.set('guest_id', guestId, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24, // 24 hours
+  });
+
+  cookieStore.set('guest_name', trimmedNickname, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24, // 24 hours
+  });
+
+  cookieStore.set('guest_room_id', room.id, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24, // 24 hours
+  });
+
+  return { roomId: room.id, guestId };
+}
+
+/**
+ * Server Action: Get current guest info from cookies
+ */
+export async function getGuestSession(): Promise<{
+  guestId: string;
+  guestName: string;
+  roomId: string;
+} | null> {
+  const cookieStore = await cookies();
+  const guestId = cookieStore.get('guest_id')?.value;
+  const guestName = cookieStore.get('guest_name')?.value;
+  const roomId = cookieStore.get('guest_room_id')?.value;
+
+  if (guestId && guestName && roomId) {
+    return { guestId, guestName, roomId };
+  }
+  return null;
+}
+
+/**
+ * Server Action: Clear guest session
+ */
+export async function clearGuestSession(): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.delete('guest_id');
+  cookieStore.delete('guest_name');
+  cookieStore.delete('guest_room_id');
 }
 
 /**

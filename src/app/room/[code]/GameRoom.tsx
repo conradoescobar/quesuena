@@ -27,6 +27,7 @@ interface GameRoomProps {
   };
   isHost: boolean;
   spotifyToken: string | null;
+  isGuest?: boolean;
 }
 
 type PlaybackMode = 'preview' | 'spotify';
@@ -41,7 +42,7 @@ interface RoundState {
 // Main Component
 // =============================================
 
-export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyToken }: GameRoomProps) {
+export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyToken, isGuest = false }: GameRoomProps) {
   const router = useRouter();
 
   // -------------------------
@@ -524,6 +525,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
                   {isConnected ? 'OK' : 'Sin conexión'}
                 </span>
               </div>
+              {isGuest && (
+                <span className="text-blue-400 text-xs bg-blue-500/20 px-2 py-0.5 rounded">
+                  Invitado
+                </span>
+              )}
               {effectiveStatus === 'playing' && (
                 <span className="text-purple-400 text-xs lg:text-sm hidden lg:inline">
                   Ronda {currentSongIndex + 1}/{songs.length || '?'}

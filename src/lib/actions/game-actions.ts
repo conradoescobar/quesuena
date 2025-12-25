@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/utils/supabase/server';
+import { cookies } from 'next/headers';
 import SpotifyWebApi from 'spotify-web-api-node';
 
 // Tipo para los resultados de búsqueda
@@ -32,10 +33,14 @@ export interface AddSongPayload {
   previewUrl: string | null;
 }
 
+// Cache para el token de Client Credentials
+let clientCredentialsToken: string | null = null;
+let clientCredentialsExpiry: number = 0;
+
 /**
- * Helper para obtener el cliente de Spotify autenticado
+ * Helper para obtener el cliente de Spotify con token de usuario (para usuarios logueados)
  */
-async function getSpotifyClient(): Promise<{
+async function getSpotifyClientWithUserToken(): Promise<{
   spotifyApi: SpotifyWebApi | null;
   error: string | null;
 }> {
@@ -62,7 +67,86 @@ async function getSpotifyClient(): Promise<{
 }
 
 /**
- * Busca canciones en Spotify usando el token del usuario autenticado
+ * Helper para obtener el cliente de Spotify con Client Credentials (para invitados)
+ * Usa SPOTIFY_CLIENT_ID y SPOTIFY_CLIENT_SECRET del env
+ */
+async function getSpotifyClientWithClientCredentials(): Promise<{
+  spotifyApi: SpotifyWebApi | null;
+  error: string | null;
+}> {
+  const clientId = process.env.SPOTIFY_CLIENT_ID;
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    console.error('Missing SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET');
+    return { spotifyApi: null, error: 'Configuración de Spotify incompleta' };
+  }
+
+  // Check if we have a valid cached token
+  if (clientCredentialsToken && Date.now() < clientCredentialsExpiry) {
+    const spotifyApi = new SpotifyWebApi();
+    spotifyApi.setAccessToken(clientCredentialsToken);
+    return { spotifyApi, error: null };
+  }
+
+  try {
+    const spotifyApi = new SpotifyWebApi({
+      clientId,
+      clientSecret,
+    });
+
+    const data = await spotifyApi.clientCredentialsGrant();
+    const accessToken = data.body.access_token;
+    const expiresIn = data.body.expires_in;
+
+    // Cache the token (with 1 minute buffer)
+    clientCredentialsToken = accessToken;
+    clientCredentialsExpiry = Date.now() + (expiresIn - 60) * 1000;
+
+    spotifyApi.setAccessToken(accessToken);
+    return { spotifyApi, error: null };
+  } catch (err) {
+    console.error('Client credentials grant error:', err);
+    return { spotifyApi: null, error: 'Error al autenticar con Spotify' };
+  }
+}
+
+/**
+ * Helper para obtener el cliente de Spotify (intenta token de usuario, luego Client Credentials)
+ */
+async function getSpotifyClient(): Promise<{
+  spotifyApi: SpotifyWebApi | null;
+  error: string | null;
+  isUserAuthenticated: boolean;
+}> {
+  // Try user token first
+  const userResult = await getSpotifyClientWithUserToken();
+  if (userResult.spotifyApi) {
+    return { ...userResult, isUserAuthenticated: true };
+  }
+
+  // Fall back to Client Credentials for guests
+  const clientResult = await getSpotifyClientWithClientCredentials();
+  return { ...clientResult, isUserAuthenticated: false };
+}
+
+/**
+ * Helper para obtener información del invitado desde cookies
+ */
+async function getGuestInfo(): Promise<{ guestId: string; guestName: string } | null> {
+  const cookieStore = await cookies();
+  const guestId = cookieStore.get('guest_id')?.value;
+  const guestName = cookieStore.get('guest_name')?.value;
+
+  if (guestId && guestName) {
+    return { guestId, guestName };
+  }
+  return null;
+}
+
+/**
+ * Busca canciones en Spotify
+ * Funciona tanto para usuarios logueados como para invitados (usando Client Credentials)
  */
 export async function searchSpotify(query: string): Promise<{
   results: SpotifySearchResult[];
@@ -101,9 +185,12 @@ export async function searchSpotify(query: string): Promise<{
 
     if (err instanceof Error) {
       if (err.message.includes('401') || err.message.includes('Unauthorized')) {
+        // Try to get a fresh Client Credentials token
+        clientCredentialsToken = null;
+        clientCredentialsExpiry = 0;
         return {
           results: [],
-          error: 'Token expirado. Refresca la página o vuelve a iniciar sesión.'
+          error: 'Token expirado. Intenta de nuevo.'
         };
       }
     }
@@ -275,6 +362,7 @@ export async function importFromPlaylist(
 
 /**
  * Agrega una canción a la cola de una sala
+ * Funciona tanto para usuarios logueados como para invitados
  */
 export async function addSongToRoom(
   roomId: string,
@@ -283,11 +371,14 @@ export async function addSongToRoom(
   try {
     const supabase = await createClient();
 
-    // Obtener el usuario actual
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    // Intentar obtener el usuario actual
+    const { data: { user } } = await supabase.auth.getUser();
 
-    if (userError || !user) {
-      return { success: false, error: 'No hay sesión activa' };
+    // Si no hay usuario, verificar si es un invitado
+    const guestInfo = !user ? await getGuestInfo() : null;
+
+    if (!user && !guestInfo) {
+      return { success: false, error: 'Debes iniciar sesión o unirte como invitado' };
     }
 
     // Verificar que la sala existe
@@ -313,16 +404,33 @@ export async function addSongToRoom(
       return { success: false, error: 'Esta canción ya está en la cola' };
     }
 
-    // Insertar la canción
-    const { error: insertError } = await supabase.from('songs').insert({
+    // Preparar datos para inserción
+    const songData: {
+      room_id: string;
+      user_id: string | null;
+      guest_id: string | null;
+      added_by_name: string | null;
+      spotify_uri: string;
+      title: string;
+      artist: string;
+      album_art_url: string;
+      preview_url: string | null;
+    } = {
       room_id: roomId,
-      user_id: user.id,
+      user_id: user?.id || null,
+      guest_id: guestInfo?.guestId || null,
+      added_by_name: user
+        ? (user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'Usuario')
+        : (guestInfo?.guestName || 'Invitado'),
       spotify_uri: song.uri,
       title: song.name,
       artist: song.artist,
       album_art_url: song.albumUrl,
       preview_url: song.previewUrl,
-    });
+    };
+
+    // Insertar la canción
+    const { error: insertError } = await supabase.from('songs').insert(songData);
 
     if (insertError) {
       console.error('Insert song error:', insertError);
