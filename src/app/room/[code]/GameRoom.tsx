@@ -7,6 +7,7 @@ import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { updateRoomStatus, updatePlayerScore } from '@/lib/actions/room';
 import { getRoomSongs, removeSong, refreshPreviewUrls } from '@/lib/actions/songs';
 import { SongSearch } from '@/components/SongSearch';
+import { HostPlayer } from '@/components/HostPlayer';
 import type { Room, Player, Song } from '@/types/database';
 
 // Duración del snippet en milisegundos
@@ -25,7 +26,10 @@ interface GameRoomProps {
     avatarUrl: string | null;
   };
   isHost: boolean;
+  spotifyToken: string | null;
 }
+
+type PlaybackMode = 'preview' | 'spotify';
 
 interface RoundState {
   winnerId: string | null;
@@ -37,7 +41,7 @@ interface RoundState {
 // Main Component
 // =============================================
 
-export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoomProps) {
+export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyToken }: GameRoomProps) {
   const router = useRouter();
 
   // -------------------------
@@ -57,6 +61,15 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   const [isSnippetPlaying, setIsSnippetPlaying] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const snippetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Spotify Premium playback state
+  const [spotifyDeviceId, setSpotifyDeviceId] = useState<string | null>(null);
+  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('preview');
+  const [currentSpotifySong, setCurrentSpotifySong] = useState<{
+    spotifyUri: string;
+    positionMs: number;
+  } | null>(null);
+  const spotifyTokenRef = useRef<string | null>(spotifyToken);
 
   // -------------------------
   // Hooks
@@ -80,7 +93,6 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
 
   // Audio player (funciona en todos los dispositivos)
   const {
-    isReady: playerReady,
     error: playerError,
     play,
     pause,
@@ -99,6 +111,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   useEffect(() => {
     loadSongs();
   }, [loadSongs]);
+
+  // Keep token ref updated
+  useEffect(() => {
+    spotifyTokenRef.current = spotifyToken;
+  }, [spotifyToken]);
 
   // -------------------------
   // Timer por ronda
@@ -128,6 +145,61 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   }, [gameState?.current_round_index, gameState?.status]);
 
   // -------------------------
+  // Play via Spotify SDK (for Premium users)
+  // -------------------------
+  const playViaSpotify = useCallback(async (spotifyUri: string, positionMs: number) => {
+    if (!spotifyDeviceId || !spotifyTokenRef.current) {
+      console.warn('[GameRoom] Cannot play via Spotify: no device or token');
+      return false;
+    }
+
+    try {
+      const response = await fetch(
+        `https://api.spotify.com/v1/me/player/play?device_id=${spotifyDeviceId}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${spotifyTokenRef.current}`,
+          },
+          body: JSON.stringify({
+            uris: [spotifyUri],
+            position_ms: positionMs,
+          }),
+        }
+      );
+
+      if (!response.ok && response.status !== 204) {
+        console.error('[GameRoom] Spotify play error:', response.status);
+        return false;
+      }
+
+      return true;
+    } catch (err) {
+      console.error('[GameRoom] Spotify play error:', err);
+      return false;
+    }
+  }, [spotifyDeviceId]);
+
+  // -------------------------
+  // Pause Spotify playback
+  // -------------------------
+  const pauseSpotify = useCallback(async () => {
+    if (!spotifyDeviceId || !spotifyTokenRef.current) return;
+
+    try {
+      await fetch(`https://api.spotify.com/v1/me/player/pause?device_id=${spotifyDeviceId}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${spotifyTokenRef.current}`,
+        },
+      });
+    } catch (err) {
+      console.error('[GameRoom] Spotify pause error:', err);
+    }
+  }, [spotifyDeviceId]);
+
+  // -------------------------
   // Manejar buzz entrante
   // -------------------------
   useEffect(() => {
@@ -143,9 +215,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
       // Si soy host, pausar la música
       if (isHost) {
         pause();
+        pauseSpotify();
+        setCurrentSpotifySong(null);
       }
     }
-  }, [lastBuzz, roundState.isLocked, gameState?.status, isHost, pause]);
+  }, [lastBuzz, roundState.isLocked, gameState?.status, isHost, pause, pauseSpotify]);
 
   // -------------------------
   // Enviar buzz (con bloqueo)
@@ -161,44 +235,78 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   // -------------------------
   // Reproducir snippet aleatorio de 3 segundos
   // -------------------------
-  const playSnippet = useCallback(async (previewUrl: string | null, customPosition?: number) => {
-    console.log('playSnippet called:', { previewUrl, playerReady });
-
-    if (!previewUrl) {
-      console.warn('No preview URL available for this song');
-      setIsSnippetPlaying(false);
-      return;
-    }
+  const playSnippet = useCallback(async (song: Song, customPosition?: number) => {
+    console.log('playSnippet called:', {
+      mode: playbackMode,
+      spotifyDeviceId,
+      hasPreviewUrl: !!song.preview_url
+    });
 
     // Limpiar timeout anterior si existe
     if (snippetTimeoutRef.current) {
       clearTimeout(snippetTimeoutRef.current);
     }
 
+    // Modo Spotify Premium - usar la canción completa
+    if (playbackMode === 'spotify' && spotifyDeviceId) {
+      // Posición aleatoria dentro de la canción (primeros 2 minutos)
+      const randomPosition = customPosition ?? Math.floor(Math.random() * 120000);
+      console.log('[GameRoom] Playing via Spotify SDK from position:', randomPosition, 'ms');
+      setSnippetPosition(randomPosition);
+      setIsSnippetPlaying(true);
+
+      // Usar HostPlayer para reproducir (via state)
+      setCurrentSpotifySong({
+        spotifyUri: song.spotify_uri,
+        positionMs: randomPosition,
+      });
+
+      // También intentar via API directo
+      const success = await playViaSpotify(song.spotify_uri, randomPosition);
+      if (!success) {
+        console.warn('[GameRoom] Spotify playback failed, HostPlayer should handle it');
+      }
+
+      // Pausar después de 3 segundos
+      snippetTimeoutRef.current = setTimeout(async () => {
+        console.log('[GameRoom] Snippet finished, pausing Spotify...');
+        await pauseSpotify();
+        setIsSnippetPlaying(false);
+        setCurrentSpotifySong(null);
+      }, SNIPPET_DURATION_MS);
+      return;
+    }
+
+    // Modo Preview (HTML5 Audio) - fallback
+    if (!song.preview_url) {
+      console.warn('No preview URL available for this song');
+      setIsSnippetPlaying(false);
+      return;
+    }
+
     // Para preview URLs, la posición aleatoria es dentro de los ~30 segundos del preview
-    // Empezamos entre 0 y 20 segundos para dejar margen
     const randomPosition = customPosition ?? Math.floor(Math.random() * 20000);
-    console.log('Playing snippet from position:', randomPosition, 'ms');
+    console.log('[GameRoom] Playing via HTML5 Audio from position:', randomPosition, 'ms');
     setSnippetPosition(randomPosition);
     setIsSnippetPlaying(true);
 
     // Reproducir desde la posición aleatoria
-    await play(previewUrl, randomPosition);
+    await play(song.preview_url, randomPosition);
 
     // Pausar después de 3 segundos
     snippetTimeoutRef.current = setTimeout(() => {
-      console.log('Snippet finished, pausing...');
+      console.log('[GameRoom] Snippet finished, pausing...');
       pause();
       setIsSnippetPlaying(false);
     }, SNIPPET_DURATION_MS);
-  }, [play, pause, playerReady]);
+  }, [playbackMode, spotifyDeviceId, play, pause, playViaSpotify, pauseSpotify]);
 
   // Repetir el mismo snippet
   const handleRepeat = useCallback(async () => {
     const songIndex = gameState?.current_round_index || 0;
-    const currentSong = songs[songIndex];
-    if (currentSong?.preview_url) {
-      await playSnippet(currentSong.preview_url, snippetPosition);
+    const song = songs[songIndex];
+    if (song) {
+      await playSnippet(song, snippetPosition);
     }
   }, [gameState?.current_round_index, songs, playSnippet, snippetPosition]);
 
@@ -206,12 +314,20 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   // Acciones del Host con persistencia
   // -------------------------
   const handleStartGame = async () => {
-    console.log('handleStartGame:', { songsCount: songs.length });
+    console.log('handleStartGame:', { songsCount: songs.length, playbackMode });
 
-    // Verificar que hay canciones con preview
-    const songsWithPreview = songs.filter(s => s.preview_url);
-    if (songsWithPreview.length === 0) {
-      alert('No hay canciones con audio disponible. Agrega otras canciones.');
+    // Verificar que hay canciones disponibles
+    // En modo Spotify no necesitamos preview_url
+    if (playbackMode === 'preview') {
+      const songsWithPreview = songs.filter(s => s.preview_url);
+      if (songsWithPreview.length === 0) {
+        alert('No hay canciones con audio disponible. Activa Spotify Premium o agrega canciones con audio preview.');
+        return;
+      }
+    }
+
+    if (songs.length === 0) {
+      alert('Agrega canciones primero.');
       return;
     }
 
@@ -222,8 +338,8 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     updateGameState({ status: 'playing', current_round_index: 0 });
 
     // 3. Reproducir snippet de la primera canción
-    if (songs.length > 0 && songs[0].preview_url) {
-      await playSnippet(songs[0].preview_url);
+    if (songs.length > 0) {
+      await playSnippet(songs[0]);
     }
 
     setIsTimerRunning(true);
@@ -239,8 +355,8 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     updateGameState({ status: 'playing', current_round_index: nextIndex });
 
     // 3. Reproducir snippet de la siguiente canción
-    if (songs[nextIndex]?.preview_url) {
-      await playSnippet(songs[nextIndex].preview_url);
+    if (songs[nextIndex]) {
+      await playSnippet(songs[nextIndex]);
     }
 
     // 4. Reset round state
@@ -263,7 +379,9 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
 
     // 3. Pausar música
     if (isHost) {
-      await pause();
+      pause();
+      await pauseSpotify();
+      setCurrentSpotifySong(null);
     }
 
     setIsTimerRunning(false);
@@ -314,6 +432,30 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     }
     setIsRefreshing(false);
   };
+
+  // -------------------------
+  // HostPlayer Callbacks
+  // -------------------------
+  const handleSpotifyReady = useCallback((deviceId: string) => {
+    console.log('[GameRoom] Spotify device ready:', deviceId);
+    setSpotifyDeviceId(deviceId);
+    setPlaybackMode('spotify');
+  }, []);
+
+  const handleSpotifyError = useCallback((error: string) => {
+    console.error('[GameRoom] Spotify error:', error);
+    // Fallback to preview mode
+    setPlaybackMode('preview');
+    setSpotifyDeviceId(null);
+  }, []);
+
+  const handleSpotifyPlaybackStarted = useCallback(() => {
+    console.log('[GameRoom] Spotify playback started');
+  }, []);
+
+  const handleSpotifyPlaybackEnded = useCallback(() => {
+    console.log('[GameRoom] Spotify playback ended');
+  }, []);
 
   // -------------------------
   // Formato tiempo
@@ -510,6 +652,21 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                     </div>
                   </div>
                 )}
+
+                {/* HostPlayer - Mobile */}
+                <div className="mt-3 pt-3 border-t border-white/10">
+                  <HostPlayer
+                    token={spotifyToken}
+                    currentSong={currentSpotifySong}
+                    onReady={handleSpotifyReady}
+                    onError={handleSpotifyError}
+                    onPlaybackStarted={handleSpotifyPlaybackStarted}
+                    onPlaybackEnded={handleSpotifyPlaybackEnded}
+                  />
+                  <p className="text-xs text-gray-500 mt-2 text-center">
+                    {playbackMode === 'spotify' ? '✓ Spotify Premium' : 'Previews 30s'}
+                  </p>
+                </div>
               </div>
             )}
           </div>
@@ -684,29 +841,53 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                   </div>
                 )}
 
-                {/* Estado del reproductor */}
-                <div className="mt-4 text-sm">
-                  {songs.filter(s => s.preview_url).length > 0 ? (
-                    <span className="text-green-400">
-                      ✓ {songs.filter(s => s.preview_url).length}/{songs.length} canciones con audio
-                    </span>
-                  ) : songs.length > 0 ? (
-                    <span className="text-yellow-400">⚠ Ninguna canción tiene audio preview</span>
-                  ) : (
-                    <span className="text-gray-400">Agrega canciones para empezar</span>
-                  )}
-                  {/* Botón para refrescar preview URLs si faltan */}
-                  {songs.length > 0 && songs.filter(s => !s.preview_url).length > 0 && (
-                    <button
-                      onClick={handleRefreshPreviews}
-                      disabled={isRefreshing}
-                      className="mt-2 text-blue-400 hover:text-blue-300 underline disabled:opacity-50"
-                    >
-                      {isRefreshing ? '🔄 Actualizando...' : '🔄 Actualizar audio'}
-                    </button>
-                  )}
-                  {playerError && <p className="text-red-400 mt-1">{playerError}</p>}
+                {/* HostPlayer - Spotify Premium Playback */}
+                <div className="mt-4 pt-4 border-t border-white/10">
+                  <p className="text-gray-400 text-sm mb-3">🔊 Audio del Host</p>
+                  <HostPlayer
+                    token={spotifyToken}
+                    currentSong={currentSpotifySong}
+                    onReady={handleSpotifyReady}
+                    onError={handleSpotifyError}
+                    onPlaybackStarted={handleSpotifyPlaybackStarted}
+                    onPlaybackEnded={handleSpotifyPlaybackEnded}
+                  />
+
+                  {/* Playback mode indicator */}
+                  <div className="mt-3 text-xs">
+                    {playbackMode === 'spotify' ? (
+                      <span className="text-green-400">✓ Usando Spotify Premium (canciones completas)</span>
+                    ) : (
+                      <span className="text-gray-400">Usando previews de 30s (activa Spotify Premium para canciones completas)</span>
+                    )}
+                  </div>
                 </div>
+
+                {/* Estado del reproductor (preview mode) */}
+                {playbackMode === 'preview' && (
+                  <div className="mt-4 text-sm">
+                    {songs.filter(s => s.preview_url).length > 0 ? (
+                      <span className="text-green-400">
+                        ✓ {songs.filter(s => s.preview_url).length}/{songs.length} canciones con audio preview
+                      </span>
+                    ) : songs.length > 0 ? (
+                      <span className="text-yellow-400">⚠ Ninguna canción tiene audio preview</span>
+                    ) : (
+                      <span className="text-gray-400">Agrega canciones para empezar</span>
+                    )}
+                    {/* Botón para refrescar preview URLs si faltan */}
+                    {songs.length > 0 && songs.filter(s => !s.preview_url).length > 0 && (
+                      <button
+                        onClick={handleRefreshPreviews}
+                        disabled={isRefreshing}
+                        className="block mt-2 text-blue-400 hover:text-blue-300 underline disabled:opacity-50"
+                      >
+                        {isRefreshing ? '🔄 Actualizando...' : '🔄 Actualizar audio'}
+                      </button>
+                    )}
+                    {playerError && <p className="text-red-400 mt-1">{playerError}</p>}
+                  </div>
+                )}
               </div>
             )}
           </div>

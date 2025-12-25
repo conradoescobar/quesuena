@@ -11,12 +11,16 @@ export default async function RoomPage({ params }: RoomPageProps) {
   const { code } = await params;
   const supabase = await createClient();
 
-  // Get user
+  // Get user and session
   const { data: { user }, error: userError } = await supabase.auth.getUser();
+  const { data: { session } } = await supabase.auth.getSession();
 
   if (userError || !user) {
     redirect('/');
   }
+
+  // Get Spotify token from session (for Premium playback)
+  const spotifyToken = session?.provider_token || null;
 
   // Get room data
   const result = await getRoomByCode(code);
@@ -47,6 +51,7 @@ export default async function RoomPage({ params }: RoomPageProps) {
         avatarUrl,
       }}
       isHost={isHost}
+      spotifyToken={spotifyToken}
     />
   );
 }
