@@ -438,9 +438,18 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
   // -------------------------
   const handleSpotifyReady = useCallback((deviceId: string) => {
     console.log('[GameRoom] Spotify device ready:', deviceId);
+
+    // Pausar cualquier audio HTML5 que esté sonando
+    pause();
+    if (snippetTimeoutRef.current) {
+      clearTimeout(snippetTimeoutRef.current);
+      snippetTimeoutRef.current = null;
+    }
+    setIsSnippetPlaying(false);
+
     setSpotifyDeviceId(deviceId);
     setPlaybackMode('spotify');
-  }, []);
+  }, [pause]);
 
   const handleSpotifyError = useCallback((error: string) => {
     console.error('[GameRoom] Spotify error:', error);
