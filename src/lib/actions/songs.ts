@@ -1,7 +1,37 @@
 'use server';
 
 import { createClient } from '@/utils/supabase/server';
+import SpotifyWebApi from 'spotify-web-api-node';
 import type { Song } from '@/types/database';
+
+/**
+ * Helper para obtener el cliente de Spotify autenticado
+ */
+async function getSpotifyClient(): Promise<{
+  spotifyApi: SpotifyWebApi | null;
+  error: string | null;
+}> {
+  const supabase = await createClient();
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+
+  if (sessionError || !session) {
+    return { spotifyApi: null, error: 'No hay sesión activa' };
+  }
+
+  const spotifyToken = session.provider_token;
+
+  if (!spotifyToken) {
+    return {
+      spotifyApi: null,
+      error: 'Token de Spotify no disponible. Vuelve a iniciar sesión.'
+    };
+  }
+
+  const spotifyApi = new SpotifyWebApi();
+  spotifyApi.setAccessToken(spotifyToken);
+
+  return { spotifyApi, error: null };
+}
 
 /**
  * Server Action: Add a song to the room
@@ -101,4 +131,83 @@ export async function removeSong(
   }
 
   return { success: true };
+}
+
+/**
+ * Server Action: Refresh preview URLs for songs without them
+ */
+export async function refreshPreviewUrls(
+  roomId: string
+): Promise<{ updated: number; error: string | null }> {
+  const supabase = await createClient();
+
+  // Get songs without preview_url
+  const { data: songs, error: fetchError } = await supabase
+    .from('songs')
+    .select('id, spotify_uri')
+    .eq('room_id', roomId)
+    .is('preview_url', null);
+
+  if (fetchError) {
+    console.error('Error fetching songs:', fetchError);
+    return { updated: 0, error: 'Error al cargar canciones' };
+  }
+
+  if (!songs || songs.length === 0) {
+    return { updated: 0, error: null };
+  }
+
+  // Get Spotify client
+  const { spotifyApi, error: spotifyError } = await getSpotifyClient();
+  if (spotifyError || !spotifyApi) {
+    return { updated: 0, error: spotifyError || 'Error de conexión con Spotify' };
+  }
+
+  // Extract track IDs from URIs (spotify:track:XXXXX -> XXXXX)
+  const trackIds = songs
+    .map(song => {
+      const parts = song.spotify_uri.split(':');
+      return parts[2]; // Get the ID part
+    })
+    .filter(id => id);
+
+  if (trackIds.length === 0) {
+    return { updated: 0, error: 'No hay IDs válidos' };
+  }
+
+  try {
+    // Fetch tracks from Spotify (max 50 per request)
+    const batchSize = 50;
+    let updatedCount = 0;
+
+    for (let i = 0; i < trackIds.length; i += batchSize) {
+      const batch = trackIds.slice(i, i + batchSize);
+      const response = await spotifyApi.getTracks(batch);
+
+      if (response.body.tracks) {
+        for (const track of response.body.tracks) {
+          if (track && track.preview_url) {
+            // Find the song with this URI
+            const song = songs.find(s => s.spotify_uri === track.uri);
+            if (song) {
+              // Update the preview_url
+              const { error: updateError } = await supabase
+                .from('songs')
+                .update({ preview_url: track.preview_url })
+                .eq('id', song.id);
+
+              if (!updateError) {
+                updatedCount++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return { updated: updatedCount, error: null };
+  } catch (err) {
+    console.error('Error refreshing preview URLs:', err);
+    return { updated: 0, error: 'Error al obtener datos de Spotify' };
+  }
 }

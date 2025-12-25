@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useGameRoom } from '@/hooks/useGameRoom';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { updateRoomStatus, updatePlayerScore } from '@/lib/actions/room';
-import { getRoomSongs, removeSong } from '@/lib/actions/songs';
+import { getRoomSongs, removeSong, refreshPreviewUrls } from '@/lib/actions/songs';
 import { SongSearch } from '@/components/SongSearch';
 import type { Room, Player, Song } from '@/types/database';
 
@@ -55,6 +55,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   const [buzzCooldown, setBuzzCooldown] = useState(false);
   const [snippetPosition, setSnippetPosition] = useState<number>(0); // Posición aleatoria del snippet
   const [isSnippetPlaying, setIsSnippetPlaying] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const snippetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // -------------------------
@@ -299,6 +300,19 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     if ('success' in result) {
       setSongs((prev) => prev.filter((s) => s.id !== songId));
     }
+  };
+
+  // -------------------------
+  // Refrescar preview URLs
+  // -------------------------
+  const handleRefreshPreviews = async () => {
+    setIsRefreshing(true);
+    const result = await refreshPreviewUrls(room.id);
+    if (result.updated > 0) {
+      // Recargar canciones para obtener los nuevos preview_url
+      await loadSongs();
+    }
+    setIsRefreshing(false);
   };
 
   // -------------------------
@@ -680,6 +694,16 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                     <span className="text-yellow-400">⚠ Ninguna canción tiene audio preview</span>
                   ) : (
                     <span className="text-gray-400">Agrega canciones para empezar</span>
+                  )}
+                  {/* Botón para refrescar preview URLs si faltan */}
+                  {songs.length > 0 && songs.filter(s => !s.preview_url).length > 0 && (
+                    <button
+                      onClick={handleRefreshPreviews}
+                      disabled={isRefreshing}
+                      className="mt-2 text-blue-400 hover:text-blue-300 underline disabled:opacity-50"
+                    >
+                      {isRefreshing ? '🔄 Actualizando...' : '🔄 Actualizar audio'}
+                    </button>
                   )}
                   {playerError && <p className="text-red-400 mt-1">{playerError}</p>}
                 </div>
