@@ -33,6 +33,14 @@ export interface AddSongPayload {
   previewUrl: string | null;
 }
 
+// Tipo para resultado de búsqueda de YouTube
+export interface YouTubeSearchResult {
+  videoId: string;
+  title: string;
+  channelTitle: string;
+  thumbnailUrl: string;
+}
+
 // Cache para el token de Client Credentials
 let clientCredentialsToken: string | null = null;
 let clientCredentialsExpiry: number = 0;
@@ -441,5 +449,68 @@ export async function addSongToRoom(
   } catch (err) {
     console.error('Add song error:', err);
     return { success: false, error: 'Error inesperado' };
+  }
+}
+
+/**
+ * Busca un video en YouTube basado en el título y artista de una canción
+ * Usa la YouTube Data API v3
+ */
+export async function searchYouTube(
+  songTitle: string,
+  artist: string
+): Promise<{ result: YouTubeSearchResult | null; error: string | null }> {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+
+  if (!apiKey) {
+    console.error('Missing YOUTUBE_API_KEY');
+    return { result: null, error: 'Configuración de YouTube incompleta' };
+  }
+
+  try {
+    // Construir query de búsqueda: "artista - canción" para mejor precisión
+    const query = `${artist} - ${songTitle}`;
+    const encodedQuery = encodeURIComponent(query);
+
+    // Llamar a la API de YouTube
+    const response = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?` +
+      `part=snippet&` +
+      `q=${encodedQuery}&` +
+      `type=video&` +
+      `videoCategoryId=10&` + // Categoría: Music
+      `maxResults=1&` +
+      `key=${apiKey}`,
+      { next: { revalidate: 3600 } } // Cache por 1 hora
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('YouTube API error:', response.status, errorData);
+
+      if (response.status === 403) {
+        return { result: null, error: 'Cuota de YouTube API agotada' };
+      }
+      return { result: null, error: 'Error al buscar en YouTube' };
+    }
+
+    const data = await response.json();
+
+    if (!data.items || data.items.length === 0) {
+      return { result: null, error: 'No se encontró el video' };
+    }
+
+    const video = data.items[0];
+    const result: YouTubeSearchResult = {
+      videoId: video.id.videoId,
+      title: video.snippet.title,
+      channelTitle: video.snippet.channelTitle,
+      thumbnailUrl: video.snippet.thumbnails.medium?.url || video.snippet.thumbnails.default?.url,
+    };
+
+    return { result, error: null };
+  } catch (err) {
+    console.error('YouTube search error:', err);
+    return { result: null, error: 'Error al buscar en YouTube' };
   }
 }

@@ -9,6 +9,8 @@ import { getRoomSongs, removeSong, refreshPreviewUrls } from '@/lib/actions/song
 import { SongSearch } from '@/components/SongSearch';
 import { HostPlayer } from '@/components/HostPlayer';
 import { RoomQRCode } from '@/components/RoomQRCode';
+import { YouTubePlayer } from '@/components/YouTubePlayer';
+import { searchYouTube } from '@/lib/actions/game-actions';
 import type { Room, Player, Song } from '@/types/database';
 
 // Duración del snippet en milisegundos
@@ -31,7 +33,7 @@ interface GameRoomProps {
   isGuest?: boolean;
 }
 
-type PlaybackMode = 'preview' | 'spotify';
+type PlaybackMode = 'preview' | 'spotify' | 'youtube';
 
 interface RoundState {
   winnerId: string | null;
@@ -72,6 +74,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
     positionMs: number;
   } | null>(null);
   const spotifyTokenRef = useRef<string | null>(spotifyToken);
+
+  // YouTube playback state
+  const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
+  const [isYouTubePlaying, setIsYouTubePlaying] = useState(false);
+  const [youtubeError, setYoutubeError] = useState<string | null>(null);
 
   // -------------------------
   // Hooks
@@ -219,6 +226,8 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
         pause();
         pauseSpotify();
         setCurrentSpotifySong(null);
+        // Pausar YouTube también
+        setIsYouTubePlaying(false);
       }
     }
   }, [lastBuzz, roundState.isLocked, gameState?.status, isHost, pause, pauseSpotify]);
@@ -235,7 +244,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
   };
 
   // -------------------------
-  // Reproducir snippet aleatorio de 3 segundos
+  // Reproducir snippet aleatorio de 2 segundos
   // -------------------------
   const playSnippet = useCallback(async (song: Song, customPosition?: number) => {
     console.log('playSnippet called:', {
@@ -248,6 +257,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
     if (snippetTimeoutRef.current) {
       clearTimeout(snippetTimeoutRef.current);
     }
+
+    // Limpiar estado de YouTube
+    setIsYouTubePlaying(false);
+    setYoutubeError(null);
 
     // Modo Spotify Premium - usar la canción completa
     if (playbackMode === 'spotify' && spotifyDeviceId) {
@@ -269,7 +282,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
         console.warn('[GameRoom] Spotify playback failed, HostPlayer should handle it');
       }
 
-      // Pausar después de 3 segundos
+      // Pausar después de SNIPPET_DURATION_MS
       snippetTimeoutRef.current = setTimeout(async () => {
         console.log('[GameRoom] Snippet finished, pausing Spotify...');
         await pauseSpotify();
@@ -279,28 +292,59 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
       return;
     }
 
-    // Modo Preview (HTML5 Audio) - fallback
-    if (!song.preview_url) {
-      console.warn('No preview URL available for this song');
+    // Modo Preview (HTML5 Audio) - si hay preview_url
+    if (song.preview_url) {
+      // Para preview URLs, la posición aleatoria es dentro de los ~30 segundos del preview
+      const randomPosition = customPosition ?? Math.floor(Math.random() * 20000);
+      console.log('[GameRoom] Playing via HTML5 Audio from position:', randomPosition, 'ms');
+      setSnippetPosition(randomPosition);
+      setIsSnippetPlaying(true);
+
+      // Reproducir desde la posición aleatoria
+      await play(song.preview_url, randomPosition);
+
+      // Pausar después de SNIPPET_DURATION_MS
+      snippetTimeoutRef.current = setTimeout(() => {
+        console.log('[GameRoom] Snippet finished, pausing...');
+        pause();
+        setIsSnippetPlaying(false);
+      }, SNIPPET_DURATION_MS);
+      return;
+    }
+
+    // Modo YouTube - fallback cuando no hay preview_url ni Spotify Premium
+    console.log('[GameRoom] No preview URL, trying YouTube for:', song.title, '-', song.artist);
+    setIsSnippetPlaying(true);
+
+    // Buscar el video en YouTube
+    const ytResult = await searchYouTube(song.title, song.artist);
+    if (ytResult.error || !ytResult.result) {
+      console.warn('[GameRoom] YouTube search failed:', ytResult.error);
+      setYoutubeError(ytResult.error || 'No se encontró en YouTube');
       setIsSnippetPlaying(false);
       return;
     }
 
-    // Para preview URLs, la posición aleatoria es dentro de los ~30 segundos del preview
-    const randomPosition = customPosition ?? Math.floor(Math.random() * 20000);
-    console.log('[GameRoom] Playing via HTML5 Audio from position:', randomPosition, 'ms');
-    setSnippetPosition(randomPosition);
-    setIsSnippetPlaying(true);
+    console.log('[GameRoom] Found YouTube video:', ytResult.result.videoId);
+    setYoutubeVideoId(ytResult.result.videoId);
+    setPlaybackMode('youtube');
 
-    // Reproducir desde la posición aleatoria
-    await play(song.preview_url, randomPosition);
+    // La posición inicial será manejada por el YouTubePlayer (startSeconds=30 por defecto)
+    const randomPosition = customPosition ?? Math.floor(Math.random() * 60); // 0-60 segundos
+    setSnippetPosition(randomPosition * 1000); // Guardar en ms para consistencia
 
-    // Pausar después de 3 segundos
+    // El playback comenzará cuando el YouTubePlayer esté listo
+    // Usamos un pequeño delay para dar tiempo al player de inicializarse
+    setTimeout(() => {
+      setIsYouTubePlaying(true);
+    }, 500);
+
+    // Pausar después de SNIPPET_DURATION_MS
     snippetTimeoutRef.current = setTimeout(() => {
-      console.log('[GameRoom] Snippet finished, pausing...');
-      pause();
+      console.log('[GameRoom] Snippet finished, pausing YouTube...');
+      setIsYouTubePlaying(false);
       setIsSnippetPlaying(false);
-    }, SNIPPET_DURATION_MS);
+    }, SNIPPET_DURATION_MS + 500); // +500 para compensar el delay inicial
   }, [playbackMode, spotifyDeviceId, play, pause, playViaSpotify, pauseSpotify]);
 
   // Repetir el mismo snippet
@@ -384,6 +428,9 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
       pause();
       await pauseSpotify();
       setCurrentSpotifySong(null);
+      // Pausar YouTube también
+      setIsYouTubePlaying(false);
+      setYoutubeVideoId(null);
     }
 
     setIsTimerRunning(false);
@@ -496,6 +543,29 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 p-4 md:p-8">
+      {/* ===================== YOUTUBE PLAYER (HIDDEN) ===================== */}
+      {isHost && youtubeVideoId && (
+        <YouTubePlayer
+          videoId={youtubeVideoId}
+          isPlaying={isYouTubePlaying}
+          startSeconds={Math.floor(snippetPosition / 1000)}
+          onReady={() => console.log('[GameRoom] YouTube player ready')}
+          onStateChange={(state) => {
+            console.log('[GameRoom] YouTube state:', state);
+            if (state === 'ended') {
+              setIsYouTubePlaying(false);
+              setIsSnippetPlaying(false);
+            }
+          }}
+          onError={(error) => {
+            console.error('[GameRoom] YouTube error:', error);
+            setYoutubeError(error);
+            setIsYouTubePlaying(false);
+            setIsSnippetPlaying(false);
+          }}
+        />
+      )}
+
       {/* ===================== BUZZ ALERT OVERLAY ===================== */}
       {roundState.isLocked && roundState.winnerName && (
         <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none bg-black/50">
@@ -685,8 +755,11 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
                     onPlaybackEnded={handleSpotifyPlaybackEnded}
                   />
                   <p className="text-xs text-gray-500 mt-2 text-center">
-                    {playbackMode === 'spotify' ? '✓ Spotify Premium' : 'Previews 30s'}
+                    {playbackMode === 'spotify' ? '✓ Spotify Premium' : playbackMode === 'youtube' ? '▶ YouTube' : 'Previews 30s'}
                   </p>
+                  {youtubeError && (
+                    <p className="text-xs text-yellow-400 mt-1 text-center">⚠ {youtubeError}</p>
+                  )}
                 </div>
               </div>
             )}
@@ -878,8 +951,13 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
                   <div className="mt-3 text-xs">
                     {playbackMode === 'spotify' ? (
                       <span className="text-green-400">✓ Usando Spotify Premium (canciones completas)</span>
+                    ) : playbackMode === 'youtube' ? (
+                      <span className="text-red-400">▶ Usando YouTube (fallback)</span>
                     ) : (
                       <span className="text-gray-400">Usando previews de 30s (activa Spotify Premium para canciones completas)</span>
+                    )}
+                    {youtubeError && (
+                      <p className="text-yellow-400 mt-1">⚠ YouTube: {youtubeError}</p>
                     )}
                   </div>
                 </div>
