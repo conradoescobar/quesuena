@@ -8,6 +8,7 @@ import { updateRoomStatus, updatePlayerScore } from '@/lib/actions/room';
 import { getRoomSongs, removeSong, refreshPreviewUrls } from '@/lib/actions/songs';
 import { SongSearch } from '@/components/SongSearch';
 import { HostPlayer } from '@/components/HostPlayer';
+import { RoomQRCode } from '@/components/RoomQRCode';
 import type { Room, Player, Song } from '@/types/database';
 
 // Duración del snippet en milisegundos
@@ -538,12 +539,17 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
             </div>
           </div>
 
-          <button
-            onClick={() => router.push('/lobby')}
-            className="text-gray-400 hover:text-white text-xs lg:text-sm transition-colors px-3 py-2 rounded-lg bg-white/5"
-          >
-            Salir
-          </button>
+          <div className="flex items-center gap-2">
+            {/* QR Code button - only for host */}
+            {isHost && <RoomQRCode roomCode={room.code} />}
+
+            <button
+              onClick={() => router.push('/lobby')}
+              className="text-gray-400 hover:text-white text-xs lg:text-sm transition-colors px-3 py-2 rounded-lg bg-white/5"
+            >
+              Salir
+            </button>
+          </div>
         </header>
 
         {/* ===================== MAIN GRID ===================== */}
