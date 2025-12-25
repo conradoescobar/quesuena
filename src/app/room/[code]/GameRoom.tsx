@@ -11,7 +11,7 @@ import { HostPlayer } from '@/components/HostPlayer';
 import type { Room, Player, Song } from '@/types/database';
 
 // Duración del snippet en milisegundos
-const SNIPPET_DURATION_MS = 3000;
+const SNIPPET_DURATION_MS = 2000;
 
 // =============================================
 // Types
