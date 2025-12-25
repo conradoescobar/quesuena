@@ -136,6 +136,7 @@ export function SongSearch({ roomId, onSongAdded }: SongSearchProps) {
       name: song.name,
       artist: song.artist,
       albumUrl: song.albumUrl,
+      previewUrl: song.previewUrl,
     });
 
     if (addError) {

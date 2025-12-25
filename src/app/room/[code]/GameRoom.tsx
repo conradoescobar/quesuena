@@ -3,8 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useGameRoom } from '@/hooks/useGameRoom';
-import { useSpotifyToken } from '@/hooks/useSpotifyToken';
-import { useSpotifyPlayer } from '@/hooks/useSpotifyPlayer';
+import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { updateRoomStatus, updatePlayerScore } from '@/lib/actions/room';
 import { getRoomSongs, removeSong } from '@/lib/actions/songs';
 import { SongSearch } from '@/components/SongSearch';
@@ -78,25 +77,13 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     avatarUrl: currentUser.avatarUrl,
   });
 
-  // Spotify token
-  const { token: spotifyToken, error: tokenError, refreshToken } = useSpotifyToken();
-
-  // Spotify player (solo host)
+  // Audio player (funciona en todos los dispositivos)
   const {
     isReady: playerReady,
     error: playerError,
     play,
     pause,
-  } = useSpotifyPlayer({
-    token: spotifyToken,
-    isHost,
-    onPlayerReady: (deviceId) => {
-      console.log('Spotify player ready:', deviceId);
-    },
-    onPlayerError: (err) => {
-      console.error('Spotify player error:', err);
-    },
-  });
+  } = useAudioPlayer();
 
   // -------------------------
   // Cargar canciones de la DB
@@ -173,11 +160,12 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
   // -------------------------
   // Reproducir snippet aleatorio de 3 segundos
   // -------------------------
-  const playSnippet = useCallback(async (spotifyUri: string, customPosition?: number) => {
-    console.log('playSnippet called:', { spotifyUri, playerReady, spotifyToken: !!spotifyToken });
+  const playSnippet = useCallback(async (previewUrl: string | null, customPosition?: number) => {
+    console.log('playSnippet called:', { previewUrl, playerReady });
 
-    if (!playerReady) {
-      console.warn('Spotify player not ready yet');
+    if (!previewUrl) {
+      console.warn('No preview URL available for this song');
+      setIsSnippetPlaying(false);
       return;
     }
 
@@ -186,41 +174,43 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
       clearTimeout(snippetTimeoutRef.current);
     }
 
-    // Generar posición aleatoria entre 30s y 2min (evitar intro/outro)
-    const randomPosition = customPosition ?? Math.floor(Math.random() * (120000 - 30000)) + 30000;
+    // Para preview URLs, la posición aleatoria es dentro de los ~30 segundos del preview
+    // Empezamos entre 0 y 20 segundos para dejar margen
+    const randomPosition = customPosition ?? Math.floor(Math.random() * 20000);
     console.log('Playing snippet from position:', randomPosition, 'ms');
     setSnippetPosition(randomPosition);
     setIsSnippetPlaying(true);
 
     // Reproducir desde la posición aleatoria
-    await play(spotifyUri, randomPosition);
+    await play(previewUrl, randomPosition);
 
     // Pausar después de 3 segundos
-    snippetTimeoutRef.current = setTimeout(async () => {
+    snippetTimeoutRef.current = setTimeout(() => {
       console.log('Snippet finished, pausing...');
-      await pause();
+      pause();
       setIsSnippetPlaying(false);
     }, SNIPPET_DURATION_MS);
-  }, [play, pause, playerReady, spotifyToken]);
+  }, [play, pause, playerReady]);
 
   // Repetir el mismo snippet
   const handleRepeat = useCallback(async () => {
     const songIndex = gameState?.current_round_index || 0;
     const currentSong = songs[songIndex];
-    if (currentSong && spotifyToken) {
-      await playSnippet(currentSong.spotify_uri, snippetPosition);
+    if (currentSong?.preview_url) {
+      await playSnippet(currentSong.preview_url, snippetPosition);
     }
-  }, [gameState?.current_round_index, songs, spotifyToken, playSnippet, snippetPosition]);
+  }, [gameState?.current_round_index, songs, playSnippet, snippetPosition]);
 
   // -------------------------
   // Acciones del Host con persistencia
   // -------------------------
   const handleStartGame = async () => {
-    console.log('handleStartGame:', { playerReady, songsCount: songs.length, hasToken: !!spotifyToken });
+    console.log('handleStartGame:', { songsCount: songs.length });
 
-    if (!playerReady) {
-      console.error('Cannot start: Spotify player not ready');
-      alert('Espera a que Spotify esté listo (ver estado abajo)');
+    // Verificar que hay canciones con preview
+    const songsWithPreview = songs.filter(s => s.preview_url);
+    if (songsWithPreview.length === 0) {
+      alert('No hay canciones con audio disponible. Agrega otras canciones.');
       return;
     }
 
@@ -231,8 +221,8 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     updateGameState({ status: 'playing', current_round_index: 0 });
 
     // 3. Reproducir snippet de la primera canción
-    if (songs.length > 0) {
-      await playSnippet(songs[0].spotify_uri);
+    if (songs.length > 0 && songs[0].preview_url) {
+      await playSnippet(songs[0].preview_url);
     }
 
     setIsTimerRunning(true);
@@ -248,8 +238,8 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
     updateGameState({ status: 'playing', current_round_index: nextIndex });
 
     // 3. Reproducir snippet de la siguiente canción
-    if (songs[nextIndex] && spotifyToken) {
-      await playSnippet(songs[nextIndex].spotify_uri);
+    if (songs[nextIndex]?.preview_url) {
+      await playSnippet(songs[nextIndex].preview_url);
     }
 
     // 4. Reset round state
@@ -440,10 +430,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                     <>
                       <button
                         onClick={handleStartGame}
-                        disabled={songs.length === 0 || !playerReady}
+                        disabled={songs.length === 0}
                         className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-3 px-6 rounded-xl transition-colors text-sm"
                       >
-                        {!playerReady ? '⏳ Cargando...' : '▶️ Iniciar'}
+                        ▶️ Iniciar
                       </button>
                       {songs.length === 0 && (
                         <p className="w-full text-center text-yellow-400 text-xs mt-2">
@@ -611,10 +601,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                     <>
                       <button
                         onClick={handleStartGame}
-                        disabled={songs.length === 0 || !playerReady}
+                        disabled={songs.length === 0}
                         className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
                       >
-                        {!playerReady ? '⏳ Cargando Spotify...' : `▶️ Iniciar Juego ${songs.length > 0 ? `(${songs.length} canciones)` : ''}`}
+                        ▶️ Iniciar Juego {songs.length > 0 && `(${songs.length} canciones)`}
                       </button>
                       {songs.length === 0 && (
                         <span className="text-yellow-400 text-sm">← Primero agrega canciones</span>
@@ -680,14 +670,16 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
                   </div>
                 )}
 
-                {/* Estado del Spotify Player */}
+                {/* Estado del reproductor */}
                 <div className="mt-4 text-sm">
-                  {playerReady ? (
-                    <span className="text-green-400">✓ Spotify listo</span>
-                  ) : spotifyToken ? (
-                    <span className="text-yellow-400">Iniciando Spotify...</span>
+                  {songs.filter(s => s.preview_url).length > 0 ? (
+                    <span className="text-green-400">
+                      ✓ {songs.filter(s => s.preview_url).length}/{songs.length} canciones con audio
+                    </span>
+                  ) : songs.length > 0 ? (
+                    <span className="text-yellow-400">⚠ Ninguna canción tiene audio preview</span>
                   ) : (
-                    <span className="text-red-400">✗ Sin conexión a Spotify</span>
+                    <span className="text-gray-400">Agrega canciones para empezar</span>
                   )}
                   {playerError && <p className="text-red-400 mt-1">{playerError}</p>}
                 </div>
@@ -744,18 +736,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost }: GameRoom
               )}
             </div>
 
-            {/* Token/Connection errors */}
-            {(tokenError || connectionError) && (
+            {/* Connection errors */}
+            {connectionError && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4">
-                <p className="text-red-400 text-sm">{tokenError || connectionError}</p>
-                {tokenError && (
-                  <button
-                    onClick={refreshToken}
-                    className="text-red-300 hover:text-red-200 text-xs mt-2 underline"
-                  >
-                    Reintentar
-                  </button>
-                )}
+                <p className="text-red-400 text-sm">{connectionError}</p>
               </div>
             )}
           </div>

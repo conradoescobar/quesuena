@@ -10,6 +10,7 @@ export interface SpotifySearchResult {
   name: string;
   artist: string;
   albumUrl: string;
+  previewUrl: string | null;
 }
 
 // Tipo para resultados de playlist
@@ -28,6 +29,7 @@ export interface AddSongPayload {
   name: string;
   artist: string;
   albumUrl: string;
+  previewUrl: string | null;
 }
 
 /**
@@ -90,6 +92,7 @@ export async function searchSpotify(query: string): Promise<{
       name: track.name,
       artist: track.artists.map((a) => a.name).join(', '),
       albumUrl: track.album.images[0]?.url || '',
+      previewUrl: track.preview_url,
     }));
 
     return { results, error: null };
@@ -197,7 +200,7 @@ export async function importFromPlaylist(
     // Obtener tracks de la playlist
     const playlistResponse = await spotifyApi.getPlaylistTracks(playlistId, {
       limit: 100,
-      fields: 'items(track(id,uri,name,artists,album(images),is_local))'
+      fields: 'items(track(id,uri,name,artists,album(images),is_local,preview_url))'
     });
 
     if (!playlistResponse.body.items) {
@@ -250,6 +253,7 @@ export async function importFromPlaylist(
       title: track.name,
       artist: track.artists.map(a => a.name).join(', '),
       album_art_url: track.album.images[0]?.url || '',
+      preview_url: track.preview_url || null,
     }));
 
     // Bulk insert
@@ -317,6 +321,7 @@ export async function addSongToRoom(
       title: song.name,
       artist: song.artist,
       album_art_url: song.albumUrl,
+      preview_url: song.previewUrl,
     });
 
     if (insertError) {

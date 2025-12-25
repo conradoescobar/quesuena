@@ -32,6 +32,7 @@ export interface Song {
   title: string;
   artist: string;
   album_art_url: string | null;
+  preview_url: string | null;
   added_at: string;
 }
 
@@ -93,6 +94,7 @@ export type Database = {
           title: string;
           artist: string;
           album_art_url?: string | null;
+          preview_url?: string | null;
           added_at?: string;
         };
         Update: {
@@ -103,6 +105,7 @@ export type Database = {
           title?: string;
           artist?: string;
           album_art_url?: string | null;
+          preview_url?: string | null;
           added_at?: string;
         };
         Relationships: [];
