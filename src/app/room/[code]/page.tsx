@@ -11,9 +11,8 @@ export default async function RoomPage({ params }: RoomPageProps) {
   const { code } = await params;
   const supabase = await createClient();
 
-  // Get user and session
+  // Get user
   const { data: { user } } = await supabase.auth.getUser();
-  const { data: { session } } = await supabase.auth.getSession();
 
   // Check for guest session if no user
   const guestSession = !user ? await getGuestSession() : null;
@@ -22,9 +21,6 @@ export default async function RoomPage({ params }: RoomPageProps) {
   if (!user && !guestSession) {
     redirect(`/join/${code}`);
   }
-
-  // Get Spotify token from session (only for logged-in users)
-  const spotifyToken = session?.provider_token || null;
 
   // Get room data
   const result = await getRoomByCode(code);
@@ -75,7 +71,6 @@ export default async function RoomPage({ params }: RoomPageProps) {
         avatarUrl,
       }}
       isHost={isHost}
-      spotifyToken={spotifyToken}
       isGuest={!!guestSession}
     />
   );

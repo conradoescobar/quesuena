@@ -3,15 +3,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useGameRoom } from '@/hooks/useGameRoom';
-import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { updateRoomStatus, updatePlayerScore } from '@/lib/actions/room';
-import { getRoomSongs, removeSong, refreshPreviewUrls } from '@/lib/actions/songs';
+import { getRoomSongs, removeSong } from '@/lib/actions/songs';
 import { SongSearch } from '@/components/SongSearch';
-import { HostPlayer } from '@/components/HostPlayer';
 import { RoomQRCode } from '@/components/RoomQRCode';
 import { YouTubePlayer } from '@/components/YouTubePlayer';
-import { searchYouTube, getSpotifyDevices, playOnSpotifyDevice, pauseSpotifyPlayback } from '@/lib/actions/game-actions';
-import type { SpotifyDevice } from '@/lib/actions/game-actions';
+import { searchYouTube } from '@/lib/actions/game-actions';
 import type { Room, Player, Song } from '@/types/database';
 
 // Duración del snippet en milisegundos
@@ -30,23 +27,20 @@ interface GameRoomProps {
     avatarUrl: string | null;
   };
   isHost: boolean;
-  spotifyToken: string | null;
   isGuest?: boolean;
 }
-
-type PlaybackMode = 'preview' | 'spotify' | 'youtube';
 
 interface RoundState {
   winnerId: string | null;
   winnerName: string | null;
-  isLocked: boolean; // Buzzer bloqueado tras encontrar ganador
+  isLocked: boolean;
 }
 
 // =============================================
 // Main Component
 // =============================================
 
-export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyToken, isGuest = false }: GameRoomProps) {
+export function GameRoom({ room, initialPlayers, currentUser, isHost, isGuest = false }: GameRoomProps) {
   const router = useRouter();
 
   // -------------------------
@@ -62,27 +56,12 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
   const [roundTimer, setRoundTimer] = useState<number>(0);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [buzzCooldown, setBuzzCooldown] = useState(false);
-  const [snippetPosition, setSnippetPosition] = useState<number>(0); // Posición aleatoria del snippet
+  const [snippetPosition, setSnippetPosition] = useState<number>(0);
   const [isSnippetPlaying, setIsSnippetPlaying] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSearchingYouTube, setIsSearchingYouTube] = useState(false);
   const snippetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Spotify Premium playback state (Web Playback SDK - desktop only)
-  const [spotifyDeviceId, setSpotifyDeviceId] = useState<string | null>(null);
-  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('preview');
-  const [currentSpotifySong, setCurrentSpotifySong] = useState<{
-    spotifyUri: string;
-    positionMs: number;
-  } | null>(null);
-  const spotifyTokenRef = useRef<string | null>(spotifyToken);
-
-  // Spotify Connect state (works on mobile - controls external devices)
-  const [spotifyDevices, setSpotifyDevices] = useState<SpotifyDevice[]>([]);
-  const [selectedDevice, setSelectedDevice] = useState<SpotifyDevice | null>(null);
-  const [isLoadingDevices, setIsLoadingDevices] = useState(false);
-  const [deviceError, setDeviceError] = useState<string | null>(null);
-
-  // YouTube playback state
+  // YouTube playback state (única fuente de audio)
   const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
   const [isYouTubePlaying, setIsYouTubePlaying] = useState(false);
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
@@ -107,13 +86,6 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
     avatarUrl: currentUser.avatarUrl,
   });
 
-  // Audio player (funciona en todos los dispositivos)
-  const {
-    error: playerError,
-    play,
-    pause,
-  } = useAudioPlayer();
-
   // -------------------------
   // Cargar canciones de la DB
   // -------------------------
@@ -127,49 +99,6 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
   useEffect(() => {
     loadSongs();
   }, [loadSongs]);
-
-  // Keep token ref updated
-  useEffect(() => {
-    spotifyTokenRef.current = spotifyToken;
-  }, [spotifyToken]);
-
-  // -------------------------
-  // Cargar dispositivos Spotify (Spotify Connect)
-  // -------------------------
-  const loadSpotifyDevices = useCallback(async () => {
-    if (!isHost || !spotifyToken) return;
-
-    setIsLoadingDevices(true);
-    setDeviceError(null);
-
-    const result = await getSpotifyDevices();
-
-    if (result.error) {
-      setDeviceError(result.error);
-    } else {
-      setSpotifyDevices(result.devices);
-
-      // Auto-seleccionar el primer dispositivo activo o el primero disponible
-      if (result.devices.length > 0 && !selectedDevice) {
-        const activeDevice = result.devices.find(d => d.isActive) || result.devices[0];
-        setSelectedDevice(activeDevice);
-        setPlaybackMode('spotify');
-        console.log('[GameRoom] Auto-selected Spotify device:', activeDevice.name);
-      }
-    }
-
-    setIsLoadingDevices(false);
-  }, [isHost, spotifyToken, selectedDevice]);
-
-  // Cargar dispositivos al montar y cada 30 segundos
-  useEffect(() => {
-    if (!isHost || !spotifyToken) return;
-
-    loadSpotifyDevices();
-
-    const interval = setInterval(loadSpotifyDevices, 30000);
-    return () => clearInterval(interval);
-  }, [isHost, spotifyToken, loadSpotifyDevices]);
 
   // -------------------------
   // Timer por ronda
@@ -189,76 +118,18 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
   // -------------------------
   useEffect(() => {
     if (gameState) {
-      // Nueva ronda: resetear estado
       setRoundState({ winnerId: null, winnerName: null, isLocked: false });
       setRoundTimer(0);
       setIsTimerRunning(gameState.status === 'playing');
     }
-    // We intentionally only react to specific gameState properties
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState?.current_round_index, gameState?.status]);
-
-  // -------------------------
-  // Play via Spotify SDK (for Premium users)
-  // -------------------------
-  const playViaSpotify = useCallback(async (spotifyUri: string, positionMs: number) => {
-    if (!spotifyDeviceId || !spotifyTokenRef.current) {
-      console.warn('[GameRoom] Cannot play via Spotify: no device or token');
-      return false;
-    }
-
-    try {
-      const response = await fetch(
-        `https://api.spotify.com/v1/me/player/play?device_id=${spotifyDeviceId}`,
-        {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${spotifyTokenRef.current}`,
-          },
-          body: JSON.stringify({
-            uris: [spotifyUri],
-            position_ms: positionMs,
-          }),
-        }
-      );
-
-      if (!response.ok && response.status !== 204) {
-        console.error('[GameRoom] Spotify play error:', response.status);
-        return false;
-      }
-
-      return true;
-    } catch (err) {
-      console.error('[GameRoom] Spotify play error:', err);
-      return false;
-    }
-  }, [spotifyDeviceId]);
-
-  // -------------------------
-  // Pause Spotify playback
-  // -------------------------
-  const pauseSpotify = useCallback(async () => {
-    if (!spotifyDeviceId || !spotifyTokenRef.current) return;
-
-    try {
-      await fetch(`https://api.spotify.com/v1/me/player/pause?device_id=${spotifyDeviceId}`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${spotifyTokenRef.current}`,
-        },
-      });
-    } catch (err) {
-      console.error('[GameRoom] Spotify pause error:', err);
-    }
-  }, [spotifyDeviceId]);
 
   // -------------------------
   // Manejar buzz entrante
   // -------------------------
   useEffect(() => {
     if (lastBuzz && !roundState.isLocked && gameState?.status === 'playing') {
-      // Primer buzz de la ronda = ganador
       setRoundState({
         winnerId: lastBuzz.user_id,
         winnerName: lastBuzz.display_name,
@@ -266,20 +137,12 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
       });
       setIsTimerRunning(false);
 
-      // Si soy host, pausar la música
+      // Si soy host, pausar YouTube
       if (isHost) {
-        pause();
-        pauseSpotify();
-        setCurrentSpotifySong(null);
-        // Pausar Spotify Connect si está activo
-        if (selectedDevice) {
-          pauseSpotifyPlayback(selectedDevice.id);
-        }
-        // Pausar YouTube también
         setIsYouTubePlaying(false);
       }
     }
-  }, [lastBuzz, roundState.isLocked, gameState?.status, isHost, pause, pauseSpotify, selectedDevice]);
+  }, [lastBuzz, roundState.isLocked, gameState?.status, isHost]);
 
   // -------------------------
   // Enviar buzz (con bloqueo)
@@ -293,114 +156,26 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
   };
 
   // -------------------------
-  // Reproducir snippet aleatorio de 2 segundos
+  // Reproducir snippet via YouTube
   // -------------------------
-  const playSnippet = useCallback(async (song: Song, customPosition?: number) => {
-    console.log('playSnippet called:', {
-      mode: playbackMode,
-      spotifyDeviceId,
-      selectedDevice: selectedDevice?.name,
-      hasPreviewUrl: !!song.preview_url
-    });
+  const playSnippet = useCallback(async (song: Song, customPositionSeconds?: number) => {
+    console.log('[GameRoom] Playing snippet via YouTube:', song.title, '-', song.artist);
 
-    // Limpiar timeout anterior si existe
+    // Limpiar timeout anterior
     if (snippetTimeoutRef.current) {
       clearTimeout(snippetTimeoutRef.current);
     }
 
-    // Limpiar estado de YouTube
+    // Resetear estado
     setIsYouTubePlaying(false);
     setYoutubeError(null);
-
-    // Modo Spotify - usar Web Playback SDK o Spotify Connect
-    const hasSpotifyDevice = spotifyDeviceId || selectedDevice;
-    if (playbackMode === 'spotify' && hasSpotifyDevice) {
-      // Posición aleatoria dentro de la canción (primeros 2 minutos)
-      const randomPosition = customPosition ?? Math.floor(Math.random() * 120000);
-      setSnippetPosition(randomPosition);
-      setIsSnippetPlaying(true);
-
-      // Determinar qué método usar
-      if (selectedDevice && !spotifyDeviceId) {
-        // Usar Spotify Connect (dispositivo externo - funciona en móvil!)
-        console.log('[GameRoom] Playing via Spotify Connect on:', selectedDevice.name, 'from position:', randomPosition, 'ms');
-
-        const result = await playOnSpotifyDevice(selectedDevice.id, song.spotify_uri, randomPosition);
-        if (!result.success) {
-          console.error('[GameRoom] Spotify Connect playback failed:', result.error);
-          setDeviceError(result.error);
-          setIsSnippetPlaying(false);
-          // Intentar fallback a preview o YouTube
-          if (song.preview_url) {
-            await play(song.preview_url, Math.floor(Math.random() * 20000));
-            snippetTimeoutRef.current = setTimeout(() => {
-              pause();
-              setIsSnippetPlaying(false);
-            }, SNIPPET_DURATION_MS);
-          }
-          return;
-        }
-
-        // Pausar después de SNIPPET_DURATION_MS
-        snippetTimeoutRef.current = setTimeout(async () => {
-          console.log('[GameRoom] Snippet finished, pausing Spotify Connect...');
-          await pauseSpotifyPlayback(selectedDevice.id);
-          setIsSnippetPlaying(false);
-        }, SNIPPET_DURATION_MS);
-        return;
-      } else if (spotifyDeviceId) {
-        // Usar Web Playback SDK (solo desktop)
-        console.log('[GameRoom] Playing via Spotify SDK from position:', randomPosition, 'ms');
-
-        // Usar HostPlayer para reproducir (via state)
-        setCurrentSpotifySong({
-          spotifyUri: song.spotify_uri,
-          positionMs: randomPosition,
-        });
-
-        // También intentar via API directo
-        const success = await playViaSpotify(song.spotify_uri, randomPosition);
-        if (!success) {
-          console.warn('[GameRoom] Spotify playback failed, HostPlayer should handle it');
-        }
-
-        // Pausar después de SNIPPET_DURATION_MS
-        snippetTimeoutRef.current = setTimeout(async () => {
-          console.log('[GameRoom] Snippet finished, pausing Spotify...');
-          await pauseSpotify();
-          setIsSnippetPlaying(false);
-          setCurrentSpotifySong(null);
-        }, SNIPPET_DURATION_MS);
-        return;
-      }
-    }
-
-    // Modo Preview (HTML5 Audio) - si hay preview_url
-    if (song.preview_url) {
-      // Para preview URLs, la posición aleatoria es dentro de los ~30 segundos del preview
-      const randomPosition = customPosition ?? Math.floor(Math.random() * 20000);
-      console.log('[GameRoom] Playing via HTML5 Audio from position:', randomPosition, 'ms');
-      setSnippetPosition(randomPosition);
-      setIsSnippetPlaying(true);
-
-      // Reproducir desde la posición aleatoria
-      await play(song.preview_url, randomPosition);
-
-      // Pausar después de SNIPPET_DURATION_MS
-      snippetTimeoutRef.current = setTimeout(() => {
-        console.log('[GameRoom] Snippet finished, pausing...');
-        pause();
-        setIsSnippetPlaying(false);
-      }, SNIPPET_DURATION_MS);
-      return;
-    }
-
-    // Modo YouTube - fallback cuando no hay preview_url ni Spotify Premium
-    console.log('[GameRoom] No preview URL, trying YouTube for:', song.title, '-', song.artist);
     setIsSnippetPlaying(true);
+    setIsSearchingYouTube(true);
 
     // Buscar el video en YouTube
     const ytResult = await searchYouTube(song.title, song.artist);
+    setIsSearchingYouTube(false);
+
     if (ytResult.error || !ytResult.result) {
       console.warn('[GameRoom] YouTube search failed:', ytResult.error);
       setYoutubeError(ytResult.error || 'No se encontró en YouTube');
@@ -408,27 +183,25 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
       return;
     }
 
-    console.log('[GameRoom] Found YouTube video:', ytResult.result.videoId);
+    console.log('[GameRoom] Found YouTube video:', ytResult.result.videoId, ytResult.result.title);
     setYoutubeVideoId(ytResult.result.videoId);
-    setPlaybackMode('youtube');
 
-    // La posición inicial será manejada por el YouTubePlayer (startSeconds=30 por defecto)
-    const randomPosition = customPosition ?? Math.floor(Math.random() * 60); // 0-60 segundos
-    setSnippetPosition(randomPosition * 1000); // Guardar en ms para consistencia
+    // Posición aleatoria entre 30-90 segundos (para saltar intros y anuncios pre-roll)
+    const randomPosition = customPositionSeconds ?? (30 + Math.floor(Math.random() * 60));
+    setSnippetPosition(randomPosition);
 
-    // El playback comenzará cuando el YouTubePlayer esté listo
-    // Usamos un pequeño delay para dar tiempo al player de inicializarse
+    // Pequeño delay para que el player se inicialice
     setTimeout(() => {
       setIsYouTubePlaying(true);
-    }, 500);
+    }, 300);
 
     // Pausar después de SNIPPET_DURATION_MS
     snippetTimeoutRef.current = setTimeout(() => {
-      console.log('[GameRoom] Snippet finished, pausing YouTube...');
+      console.log('[GameRoom] Snippet finished');
       setIsYouTubePlaying(false);
       setIsSnippetPlaying(false);
-    }, SNIPPET_DURATION_MS + 500); // +500 para compensar el delay inicial
-  }, [playbackMode, spotifyDeviceId, selectedDevice, play, pause, playViaSpotify, pauseSpotify]);
+    }, SNIPPET_DURATION_MS + 300);
+  }, []);
 
   // Repetir el mismo snippet
   const handleRepeat = useCallback(async () => {
@@ -440,21 +213,9 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
   }, [gameState?.current_round_index, songs, playSnippet, snippetPosition]);
 
   // -------------------------
-  // Acciones del Host con persistencia
+  // Acciones del Host
   // -------------------------
   const handleStartGame = async () => {
-    console.log('handleStartGame:', { songsCount: songs.length, playbackMode });
-
-    // Verificar que hay canciones disponibles
-    // En modo Spotify no necesitamos preview_url
-    if (playbackMode === 'preview') {
-      const songsWithPreview = songs.filter(s => s.preview_url);
-      if (songsWithPreview.length === 0) {
-        alert('No hay canciones con audio disponible. Activa Spotify Premium o agrega canciones con audio preview.');
-        return;
-      }
-    }
-
     if (songs.length === 0) {
       alert('Agrega canciones primero.');
       return;
@@ -467,9 +228,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
     updateGameState({ status: 'playing', current_round_index: 0 });
 
     // 3. Reproducir snippet de la primera canción
-    if (songs.length > 0) {
-      await playSnippet(songs[0]);
-    }
+    await playSnippet(songs[0]);
 
     setIsTimerRunning(true);
   };
@@ -506,19 +265,9 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
     // 2. Broadcast
     updateGameState({ status: 'finished', current_round_index: 0 });
 
-    // 3. Pausar música
-    if (isHost) {
-      pause();
-      await pauseSpotify();
-      setCurrentSpotifySong(null);
-      // Pausar Spotify Connect si está activo
-      if (selectedDevice) {
-        await pauseSpotifyPlayback(selectedDevice.id);
-      }
-      // Pausar YouTube también
-      setIsYouTubePlaying(false);
-      setYoutubeVideoId(null);
-    }
+    // 3. Pausar YouTube
+    setIsYouTubePlaying(false);
+    setYoutubeVideoId(null);
 
     setIsTimerRunning(false);
     setIsSnippetPlaying(false);
@@ -557,52 +306,6 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
   };
 
   // -------------------------
-  // Refrescar preview URLs
-  // -------------------------
-  const handleRefreshPreviews = async () => {
-    setIsRefreshing(true);
-    const result = await refreshPreviewUrls(room.id);
-    if (result.updated > 0) {
-      // Recargar canciones para obtener los nuevos preview_url
-      await loadSongs();
-    }
-    setIsRefreshing(false);
-  };
-
-  // -------------------------
-  // HostPlayer Callbacks
-  // -------------------------
-  const handleSpotifyReady = useCallback((deviceId: string) => {
-    console.log('[GameRoom] Spotify device ready:', deviceId);
-
-    // Pausar cualquier audio HTML5 que esté sonando
-    pause();
-    if (snippetTimeoutRef.current) {
-      clearTimeout(snippetTimeoutRef.current);
-      snippetTimeoutRef.current = null;
-    }
-    setIsSnippetPlaying(false);
-
-    setSpotifyDeviceId(deviceId);
-    setPlaybackMode('spotify');
-  }, [pause]);
-
-  const handleSpotifyError = useCallback((error: string) => {
-    console.error('[GameRoom] Spotify error:', error);
-    // Fallback to preview mode
-    setPlaybackMode('preview');
-    setSpotifyDeviceId(null);
-  }, []);
-
-  const handleSpotifyPlaybackStarted = useCallback(() => {
-    console.log('[GameRoom] Spotify playback started');
-  }, []);
-
-  const handleSpotifyPlaybackEnded = useCallback(() => {
-    console.log('[GameRoom] Spotify playback ended');
-  }, []);
-
-  // -------------------------
   // Formato tiempo
   // -------------------------
   const formatTime = (seconds: number) => {
@@ -635,7 +338,7 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
         <YouTubePlayer
           videoId={youtubeVideoId}
           isPlaying={isYouTubePlaying}
-          startSeconds={Math.floor(snippetPosition / 1000)}
+          startSeconds={snippetPosition}
           onReady={() => console.log('[GameRoom] YouTube player ready')}
           onStateChange={(state) => {
             console.log('[GameRoom] YouTube state:', state);
@@ -710,7 +413,6 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
         </header>
 
         {/* ===================== MAIN GRID ===================== */}
-        {/* Mobile: stack with buzzer first. Desktop: 4-column grid */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6">
 
           {/* ===================== MOBILE: BUZZER FIRST ===================== */}
@@ -780,10 +482,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
                     <>
                       <button
                         onClick={handleRepeat}
-                        disabled={isSnippetPlaying}
+                        disabled={isSnippetPlaying || isSearchingYouTube}
                         className="bg-yellow-500 disabled:bg-yellow-600 text-white font-medium py-3 px-4 rounded-xl text-sm"
                       >
-                        {isSnippetPlaying ? '🔊' : '🔁'}
+                        {isSearchingYouTube ? '🔍' : isSnippetPlaying ? '🔊' : '🔁'}
                       </button>
                       <button
                         onClick={handleNextRound}
@@ -831,64 +533,15 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
                   </div>
                 )}
 
-                {/* Spotify Connect - Dispositivos */}
-                <div className="mt-3 pt-3 border-t border-white/10">
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-xs text-gray-400">🔊 Dispositivo Spotify</p>
-                    <button
-                      onClick={loadSpotifyDevices}
-                      disabled={isLoadingDevices}
-                      className="text-xs text-blue-400 hover:text-blue-300"
-                    >
-                      {isLoadingDevices ? '...' : '↻'}
-                    </button>
-                  </div>
-
-                  {spotifyDevices.length > 0 ? (
-                    <select
-                      value={selectedDevice?.id || ''}
-                      onChange={(e) => {
-                        const device = spotifyDevices.find(d => d.id === e.target.value);
-                        setSelectedDevice(device || null);
-                        if (device) setPlaybackMode('spotify');
-                      }}
-                      className="w-full bg-white/10 text-white text-sm rounded-lg px-3 py-2 border border-white/20"
-                    >
-                      {spotifyDevices.map((device) => (
-                        <option key={device.id} value={device.id}>
-                          {device.type === 'Smartphone' ? '📱' : device.type === 'Computer' ? '💻' : '🔊'} {device.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <p className="text-xs text-gray-500 text-center py-2">
-                      {isLoadingDevices ? 'Buscando...' : 'Abre Spotify en tu móvil'}
-                    </p>
-                  )}
-
-                  {deviceError && (
-                    <p className="text-xs text-yellow-400 mt-1 text-center">⚠ {deviceError}</p>
-                  )}
-
-                  {/* Fallback: HostPlayer para Web Playback SDK (desktop) */}
-                  {!selectedDevice && (
-                    <div className="mt-2">
-                      <HostPlayer
-                        token={spotifyToken}
-                        currentSong={currentSpotifySong}
-                        onReady={handleSpotifyReady}
-                        onError={handleSpotifyError}
-                        onPlaybackStarted={handleSpotifyPlaybackStarted}
-                        onPlaybackEnded={handleSpotifyPlaybackEnded}
-                      />
-                    </div>
-                  )}
-
-                  <p className="text-xs text-gray-500 mt-2 text-center">
-                    {selectedDevice ? `✓ ${selectedDevice.name}` : playbackMode === 'spotify' ? '✓ Spotify SDK' : playbackMode === 'youtube' ? '▶ YouTube' : 'Previews 30s'}
+                {/* YouTube status */}
+                <div className="mt-3 pt-3 border-t border-white/10 text-center">
+                  <p className="text-xs text-gray-400">
+                    {isSearchingYouTube ? '🔍 Buscando en YouTube...' :
+                     isSnippetPlaying ? '🎵 Reproduciendo...' :
+                     '▶ Audio via YouTube'}
                   </p>
                   {youtubeError && (
-                    <p className="text-xs text-yellow-400 mt-1 text-center">⚠ {youtubeError}</p>
+                    <p className="text-xs text-yellow-400 mt-1">⚠ {youtubeError}</p>
                   )}
                 </div>
               </div>
@@ -1010,10 +663,10 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
                     <>
                       <button
                         onClick={handleRepeat}
-                        disabled={isSnippetPlaying}
+                        disabled={isSnippetPlaying || isSearchingYouTube}
                         className="bg-yellow-500 hover:bg-yellow-600 disabled:bg-yellow-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
                       >
-                        {isSnippetPlaying ? '🔊 Sonando...' : '🔁 Repetir'}
+                        {isSearchingYouTube ? '🔍 Buscando...' : isSnippetPlaying ? '🔊 Sonando...' : '🔁 Repetir'}
                       </button>
                       <button
                         onClick={handleNextRound}
@@ -1065,119 +718,17 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, spotifyTok
                   </div>
                 )}
 
-                {/* Spotify Connect - Dispositivos */}
+                {/* YouTube status */}
                 <div className="mt-4 pt-4 border-t border-white/10">
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="text-gray-400 text-sm">🔊 Dispositivo Spotify</p>
-                    <button
-                      onClick={loadSpotifyDevices}
-                      disabled={isLoadingDevices}
-                      className="text-sm text-blue-400 hover:text-blue-300 disabled:opacity-50"
-                    >
-                      {isLoadingDevices ? 'Buscando...' : '↻ Actualizar'}
-                    </button>
-                  </div>
-
-                  {spotifyDevices.length > 0 ? (
-                    <div className="space-y-2">
-                      {spotifyDevices.map((device) => (
-                        <button
-                          key={device.id}
-                          onClick={() => {
-                            setSelectedDevice(device);
-                            setPlaybackMode('spotify');
-                          }}
-                          className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors ${
-                            selectedDevice?.id === device.id
-                              ? 'bg-green-500/20 border border-green-500/50'
-                              : 'bg-white/5 hover:bg-white/10 border border-transparent'
-                          }`}
-                        >
-                          <span className="text-xl">
-                            {device.type === 'Smartphone' ? '📱' : device.type === 'Computer' ? '💻' : '🔊'}
-                          </span>
-                          <div className="flex-1 text-left">
-                            <p className="text-white text-sm">{device.name}</p>
-                            <p className="text-gray-500 text-xs">{device.type}</p>
-                          </div>
-                          {selectedDevice?.id === device.id && (
-                            <span className="text-green-400">✓</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-4">
-                      <p className="text-gray-400 text-sm mb-2">
-                        {isLoadingDevices ? 'Buscando dispositivos...' : 'No se encontraron dispositivos'}
-                      </p>
-                      <p className="text-gray-500 text-xs">
-                        Abre Spotify en tu móvil o PC para conectar
-                      </p>
-                    </div>
+                  <p className="text-gray-400 text-sm">
+                    {isSearchingYouTube ? '🔍 Buscando en YouTube...' :
+                     isSnippetPlaying ? '🎵 Reproduciendo snippet...' :
+                     '▶ Audio via YouTube'}
+                  </p>
+                  {youtubeError && (
+                    <p className="text-yellow-400 text-sm mt-2">⚠ {youtubeError}</p>
                   )}
-
-                  {deviceError && (
-                    <p className="text-yellow-400 text-sm mt-2">⚠ {deviceError}</p>
-                  )}
-
-                  {/* Fallback: HostPlayer para Web Playback SDK (desktop) */}
-                  {!selectedDevice && spotifyToken && (
-                    <div className="mt-4 pt-4 border-t border-white/10">
-                      <p className="text-gray-500 text-xs mb-2">O usa el reproductor web (solo PC):</p>
-                      <HostPlayer
-                        token={spotifyToken}
-                        currentSong={currentSpotifySong}
-                        onReady={handleSpotifyReady}
-                        onError={handleSpotifyError}
-                        onPlaybackStarted={handleSpotifyPlaybackStarted}
-                        onPlaybackEnded={handleSpotifyPlaybackEnded}
-                      />
-                    </div>
-                  )}
-
-                  {/* Playback mode indicator */}
-                  <div className="mt-3 text-xs">
-                    {selectedDevice ? (
-                      <span className="text-green-400">✓ Reproduciendo en {selectedDevice.name}</span>
-                    ) : playbackMode === 'spotify' ? (
-                      <span className="text-green-400">✓ Usando Spotify Web SDK</span>
-                    ) : playbackMode === 'youtube' ? (
-                      <span className="text-red-400">▶ Usando YouTube (fallback)</span>
-                    ) : (
-                      <span className="text-gray-400">Usando previews de 30s</span>
-                    )}
-                    {youtubeError && (
-                      <p className="text-yellow-400 mt-1">⚠ YouTube: {youtubeError}</p>
-                    )}
-                  </div>
                 </div>
-
-                {/* Estado del reproductor (preview mode) */}
-                {playbackMode === 'preview' && (
-                  <div className="mt-4 text-sm">
-                    {songs.filter(s => s.preview_url).length > 0 ? (
-                      <span className="text-green-400">
-                        ✓ {songs.filter(s => s.preview_url).length}/{songs.length} canciones con audio preview
-                      </span>
-                    ) : songs.length > 0 ? (
-                      <span className="text-yellow-400">⚠ Ninguna canción tiene audio preview</span>
-                    ) : (
-                      <span className="text-gray-400">Agrega canciones para empezar</span>
-                    )}
-                    {/* Botón para refrescar preview URLs si faltan */}
-                    {songs.length > 0 && songs.filter(s => !s.preview_url).length > 0 && (
-                      <button
-                        onClick={handleRefreshPreviews}
-                        disabled={isRefreshing}
-                        className="block mt-2 text-blue-400 hover:text-blue-300 underline disabled:opacity-50"
-                      >
-                        {isRefreshing ? '🔄 Actualizando...' : '🔄 Actualizar audio'}
-                      </button>
-                    )}
-                    {playerError && <p className="text-red-400 mt-1">{playerError}</p>}
-                  </div>
-                )}
               </div>
             )}
           </div>
