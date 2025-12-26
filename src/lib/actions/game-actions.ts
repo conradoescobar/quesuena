@@ -3,6 +3,10 @@
 import { createClient } from '@/utils/supabase/server';
 import { cookies } from 'next/headers';
 import SpotifyWebApi from 'spotify-web-api-node';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // Tipo para los resultados de búsqueda
 export interface SpotifySearchResult {
@@ -463,63 +467,63 @@ export async function addSongToRoom(
 
 /**
  * Busca un video en YouTube basado en el título y artista de una canción
- * Usa la YouTube Data API v3
+ * Usa yt-dlp para evitar límites de la API
  */
 export async function searchYouTube(
   songTitle: string,
   artist: string
 ): Promise<{ result: YouTubeSearchResult | null; error: string | null }> {
-  const apiKey = process.env.YOUTUBE_API_KEY;
-
-  if (!apiKey) {
-    console.error('Missing YOUTUBE_API_KEY');
-    return { result: null, error: 'Configuración de YouTube incompleta' };
-  }
-
   try {
-    // Construir query de búsqueda: "artista - canción" para mejor precisión
+    // Construir query de búsqueda: "artista - canción"
     const query = `${artist} - ${songTitle}`;
-    const encodedQuery = encodeURIComponent(query);
 
-    // Llamar a la API de YouTube
-    const response = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?` +
-      `part=snippet&` +
-      `q=${encodedQuery}&` +
-      `type=video&` +
-      `videoCategoryId=10&` + // Categoría: Music
-      `maxResults=1&` +
-      `key=${apiKey}`,
-      { next: { revalidate: 3600 } } // Cache por 1 hora
-    );
+    // Escapar comillas y caracteres especiales para el shell
+    const escapedQuery = query.replace(/"/g, '\\"').replace(/\$/g, '\\$');
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error('YouTube API error:', response.status, errorData);
+    // Usar yt-dlp para buscar en YouTube
+    // ytsearch1: busca 1 resultado
+    // --print id,title: imprime ID y título separados por línea
+    // --no-download: no descarga el video
+    // --no-warnings: oculta advertencias
+    const command = `yt-dlp "ytsearch1:${escapedQuery}" --print id --print title --no-download --no-warnings --no-playlist --no-check-certificates`;
 
-      if (response.status === 403) {
-        return { result: null, error: 'Cuota de YouTube API agotada' };
-      }
+    console.log('[yt-dlp] Searching:', query);
+
+    const { stdout, stderr } = await execAsync(command, { timeout: 15000 });
+
+    if (stderr && !stdout) {
+      console.error('[yt-dlp] Error:', stderr);
       return { result: null, error: 'Error al buscar en YouTube' };
     }
 
-    const data = await response.json();
+    const lines = stdout.trim().split('\n');
 
-    if (!data.items || data.items.length === 0) {
+    if (lines.length < 2 || !lines[0]) {
+      console.warn('[yt-dlp] No results found');
       return { result: null, error: 'No se encontró el video' };
     }
 
-    const video = data.items[0];
+    const videoId = lines[0].trim();
+    const title = lines[1]?.trim() || query;
+
+    console.log('[yt-dlp] Found:', videoId, '-', title);
+
     const result: YouTubeSearchResult = {
-      videoId: video.id.videoId,
-      title: video.snippet.title,
-      channelTitle: video.snippet.channelTitle,
-      thumbnailUrl: video.snippet.thumbnails.medium?.url || video.snippet.thumbnails.default?.url,
+      videoId,
+      title,
+      channelTitle: '', // yt-dlp no da esto fácilmente, pero no lo usamos
+      thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
     };
 
     return { result, error: null };
   } catch (err) {
-    console.error('YouTube search error:', err);
+    console.error('[yt-dlp] Search error:', err);
+
+    // Verificar si yt-dlp no está instalado
+    if (err instanceof Error && err.message.includes('not found')) {
+      return { result: null, error: 'yt-dlp no está instalado en el servidor' };
+    }
+
     return { result: null, error: 'Error al buscar en YouTube' };
   }
 }
