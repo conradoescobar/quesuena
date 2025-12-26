@@ -463,7 +463,8 @@ export async function addSongToRoom(
 
 /**
  * Busca un video en YouTube basado en el título y artista de una canción
- * Usa la YouTube Data API v3 con cacheo en la base de datos
+ * Usa el microservicio yt-dlp (Railway) o YouTube API como fallback
+ * Los resultados se cachean en la base de datos
  *
  * @param songTitle - Título de la canción
  * @param artist - Artista de la canción
@@ -498,80 +499,118 @@ export async function searchYouTube(
     }
   }
 
-  // No hay cache, buscar en YouTube API
-  const apiKey = process.env.YOUTUBE_API_KEY;
+  const query = `${artist} - ${songTitle}`;
+  let videoId: string | null = null;
+  let title: string = query;
+  let thumbnailUrl: string = '';
+  let channelTitle: string = '';
 
-  if (!apiKey) {
-    console.error('Missing YOUTUBE_API_KEY');
-    return { result: null, error: 'Configuración de YouTube incompleta' };
+  // Intentar primero con el microservicio yt-dlp (sin límites)
+  const ytServiceUrl = process.env.YT_SEARCH_SERVICE_URL;
+
+  if (ytServiceUrl) {
+    try {
+      console.log('[yt-dlp service] Searching:', query);
+
+      const response = await fetch(
+        `${ytServiceUrl}/search?q=${encodeURIComponent(query)}`,
+        { cache: 'no-store' }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        videoId = data.videoId;
+        title = data.title || query;
+        thumbnailUrl = data.thumbnailUrl || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+
+        console.log('[yt-dlp service] Found:', videoId, '-', title);
+      } else {
+        console.warn('[yt-dlp service] Error:', response.status);
+      }
+    } catch (err) {
+      console.warn('[yt-dlp service] Failed, trying YouTube API:', err);
+    }
   }
 
-  try {
-    // Construir query de búsqueda: "artista - canción"
-    const query = `${artist} - ${songTitle}`;
-    const encodedQuery = encodeURIComponent(query);
+  // Fallback a YouTube API si el microservicio no funcionó
+  if (!videoId) {
+    const apiKey = process.env.YOUTUBE_API_KEY;
 
-    console.log('[YouTube API] Searching:', query);
+    if (!apiKey) {
+      console.error('No YT_SEARCH_SERVICE_URL nor YOUTUBE_API_KEY configured');
+      return { result: null, error: 'Configuración de YouTube incompleta' };
+    }
 
-    // Llamar a la API de YouTube
-    const response = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?` +
-      `part=snippet&` +
-      `q=${encodedQuery}&` +
-      `type=video&` +
-      `videoCategoryId=10&` + // Categoría: Music
-      `maxResults=1&` +
-      `key=${apiKey}`,
-      { next: { revalidate: 3600 } } // Cache HTTP por 1 hora
-    );
+    try {
+      console.log('[YouTube API] Searching:', query);
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error('YouTube API error:', response.status, errorData);
+      const response = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?` +
+        `part=snippet&` +
+        `q=${encodeURIComponent(query)}&` +
+        `type=video&` +
+        `videoCategoryId=10&` +
+        `maxResults=1&` +
+        `key=${apiKey}`,
+        { next: { revalidate: 3600 } }
+      );
 
-      if (response.status === 403) {
-        return { result: null, error: 'Cuota de YouTube API agotada' };
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('YouTube API error:', response.status, errorData);
+
+        if (response.status === 403) {
+          return { result: null, error: 'Cuota de YouTube API agotada' };
+        }
+        return { result: null, error: 'Error al buscar en YouTube' };
       }
+
+      const data = await response.json();
+
+      if (!data.items || data.items.length === 0) {
+        return { result: null, error: 'No se encontró el video' };
+      }
+
+      const video = data.items[0];
+      videoId = video.id.videoId;
+      title = video.snippet.title;
+      channelTitle = video.snippet.channelTitle;
+      thumbnailUrl = video.snippet.thumbnails.medium?.url || video.snippet.thumbnails.default?.url;
+
+      console.log('[YouTube API] Found:', videoId, '-', title);
+    } catch (err) {
+      console.error('YouTube search error:', err);
       return { result: null, error: 'Error al buscar en YouTube' };
     }
-
-    const data = await response.json();
-
-    if (!data.items || data.items.length === 0) {
-      return { result: null, error: 'No se encontró el video' };
-    }
-
-    const video = data.items[0];
-    const videoId = video.id.videoId;
-
-    console.log('[YouTube API] Found:', videoId, '-', video.snippet.title);
-
-    // Cachear el resultado en la DB si tenemos songId
-    if (songId && videoId) {
-      const { error: updateError } = await supabase
-        .from('songs')
-        .update({ youtube_video_id: videoId })
-        .eq('id', songId);
-
-      if (updateError) {
-        console.warn('[YouTube] Failed to cache videoId:', updateError);
-      } else {
-        console.log('[YouTube] Cached videoId for song:', songId);
-      }
-    }
-
-    const result: YouTubeSearchResult = {
-      videoId,
-      title: video.snippet.title,
-      channelTitle: video.snippet.channelTitle,
-      thumbnailUrl: video.snippet.thumbnails.medium?.url || video.snippet.thumbnails.default?.url,
-    };
-
-    return { result, error: null };
-  } catch (err) {
-    console.error('YouTube search error:', err);
-    return { result: null, error: 'Error al buscar en YouTube' };
   }
+
+  // Cachear el resultado en la DB si tenemos songId
+  if (songId && videoId) {
+    const { error: updateError } = await supabase
+      .from('songs')
+      .update({ youtube_video_id: videoId })
+      .eq('id', songId);
+
+    if (updateError) {
+      console.warn('[YouTube] Failed to cache videoId:', updateError);
+    } else {
+      console.log('[YouTube] Cached videoId for song:', songId);
+    }
+  }
+
+  if (!videoId) {
+    return { result: null, error: 'No se encontró el video' };
+  }
+
+  return {
+    result: {
+      videoId,
+      title,
+      channelTitle,
+      thumbnailUrl,
+    },
+    error: null,
+  };
 }
 
 /**
