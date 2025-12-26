@@ -41,6 +41,15 @@ export interface YouTubeSearchResult {
   thumbnailUrl: string;
 }
 
+// Tipo para dispositivos de Spotify
+export interface SpotifyDevice {
+  id: string;
+  name: string;
+  type: string; // 'Computer', 'Smartphone', 'Speaker', etc.
+  isActive: boolean;
+  volumePercent: number;
+}
+
 // Cache para el token de Client Credentials
 let clientCredentialsToken: string | null = null;
 let clientCredentialsExpiry: number = 0;
@@ -512,5 +521,103 @@ export async function searchYouTube(
   } catch (err) {
     console.error('YouTube search error:', err);
     return { result: null, error: 'Error al buscar en YouTube' };
+  }
+}
+
+/**
+ * Obtiene los dispositivos de Spotify disponibles del usuario
+ * Requiere que el usuario tenga Spotify abierto en algún dispositivo
+ */
+export async function getSpotifyDevices(): Promise<{
+  devices: SpotifyDevice[];
+  error: string | null;
+}> {
+  try {
+    const { spotifyApi, error } = await getSpotifyClientWithUserToken();
+    if (error || !spotifyApi) {
+      return { devices: [], error: error || 'No hay sesión activa' };
+    }
+
+    const response = await spotifyApi.getMyDevices();
+
+    if (!response.body.devices) {
+      return { devices: [], error: null };
+    }
+
+    const devices: SpotifyDevice[] = response.body.devices
+      .filter((d): d is SpotifyApi.UserDevice & { id: string } => d.id !== null)
+      .map((device) => ({
+        id: device.id,
+        name: device.name || 'Dispositivo desconocido',
+        type: device.type || 'Unknown',
+        isActive: device.is_active || false,
+        volumePercent: device.volume_percent || 50,
+      }));
+
+    return { devices, error: null };
+  } catch (err) {
+    console.error('Get devices error:', err);
+    return { devices: [], error: 'Error al obtener dispositivos' };
+  }
+}
+
+/**
+ * Reproduce una canción en un dispositivo específico de Spotify
+ * Funciona incluso si el dispositivo no está activo (lo activa automáticamente)
+ */
+export async function playOnSpotifyDevice(
+  deviceId: string,
+  spotifyUri: string,
+  positionMs: number = 0
+): Promise<{ success: boolean; error: string | null }> {
+  try {
+    const { spotifyApi, error } = await getSpotifyClientWithUserToken();
+    if (error || !spotifyApi) {
+      return { success: false, error: error || 'No hay sesión activa' };
+    }
+
+    // Transferir reproducción al dispositivo y reproducir
+    await spotifyApi.play({
+      device_id: deviceId,
+      uris: [spotifyUri],
+      position_ms: positionMs,
+    });
+
+    return { success: true, error: null };
+  } catch (err) {
+    console.error('Play on device error:', err);
+
+    // Check for specific errors
+    if (err instanceof Error) {
+      if (err.message.includes('NO_ACTIVE_DEVICE') || err.message.includes('Device not found')) {
+        return { success: false, error: 'El dispositivo no está disponible. Abre Spotify en tu móvil.' };
+      }
+      if (err.message.includes('PREMIUM_REQUIRED')) {
+        return { success: false, error: 'Se requiere Spotify Premium' };
+      }
+    }
+
+    return { success: false, error: 'Error al reproducir' };
+  }
+}
+
+/**
+ * Pausa la reproducción en Spotify
+ */
+export async function pauseSpotifyPlayback(
+  deviceId?: string
+): Promise<{ success: boolean; error: string | null }> {
+  try {
+    const { spotifyApi, error } = await getSpotifyClientWithUserToken();
+    if (error || !spotifyApi) {
+      return { success: false, error: error || 'No hay sesión activa' };
+    }
+
+    await spotifyApi.pause(deviceId ? { device_id: deviceId } : undefined);
+
+    return { success: true, error: null };
+  } catch (err) {
+    console.error('Pause playback error:', err);
+    return { success: false, error: 'Error al pausar' };
   }
 }
