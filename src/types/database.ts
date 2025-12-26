@@ -36,6 +36,7 @@ export interface Song {
   artist: string;
   album_art_url: string | null;
   preview_url: string | null;
+  youtube_video_id: string | null; // Cached YouTube video ID
   added_at: string;
 }
 
@@ -102,6 +103,7 @@ export type Database = {
           artist: string;
           album_art_url?: string | null;
           preview_url?: string | null;
+          youtube_video_id?: string | null;
           added_at?: string;
         };
         Update: {
@@ -115,6 +117,7 @@ export type Database = {
           artist?: string;
           album_art_url?: string | null;
           preview_url?: string | null;
+          youtube_video_id?: string | null;
           added_at?: string;
         };
         Relationships: [];

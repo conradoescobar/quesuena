@@ -172,8 +172,8 @@ export function GameRoom({ room, initialPlayers, currentUser, isHost, isGuest = 
     setIsSnippetPlaying(true);
     setIsSearchingYouTube(true);
 
-    // Buscar el video en YouTube
-    const ytResult = await searchYouTube(song.title, song.artist);
+    // Buscar el video en YouTube (con cacheo por songId)
+    const ytResult = await searchYouTube(song.title, song.artist, song.id);
     setIsSearchingYouTube(false);
 
     if (ytResult.error || !ytResult.result) {
